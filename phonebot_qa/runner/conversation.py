@@ -14,6 +14,8 @@ latency metrics (section 18/26) are meaningful and reproducible.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +24,7 @@ from ..backend.faults import FaultInjector
 from ..backend.proxy import ToolProxy
 from ..backend.tools import ToolRegistry, default_registry
 from ..backend.world import World
+from ..degradation import compile_patterns, is_degraded
 from ..models import Conversation, Event, ToolCall, Turn
 from ..observability import EventLog
 from ..simulator.base import UserSimulator
@@ -34,6 +37,11 @@ class RunnerConfig:
     # Nominal per-turn bot processing latency (STT+LLM+TTS-ish) in text mode.
     bot_think_ms: int = 400
     registry_factory: Any = default_registry
+    # Bot-agnostische Fallback-Muster (M3/P1, regex-fähig): jeder Bot-Turn, der
+    # matcht, wird als degraded markiert — zusätzlich zu Adaptern, die selbst
+    # ``BotResponse.metadata["degraded"]`` setzen. Default: keine (der
+    # Cross3Adapter bringt seine CROSS3-Muster selbst mit).
+    fallback_patterns: Sequence[str] | None = None
 
 
 @dataclass
@@ -78,6 +86,7 @@ class ConversationRunner:
 
         conversation = Conversation()
         error: str | None = None
+        fallback_patterns = compile_patterns(self.config.fallback_patterns)
 
         context = SessionContext(
             scenario_id=scenario.id,
@@ -87,6 +96,7 @@ class ConversationRunner:
             metadata={"seed": seed},
         )
 
+        session = None
         try:
             session = await self.bot.start_session(context)
             events.emit("session_started")
@@ -117,10 +127,22 @@ class ConversationRunner:
                 history.append({"role": "user", "content": user_turn.text})
 
                 t0 = events.clock.now_ms
+                wall_t0 = time.perf_counter()
                 response = await self.bot.send_text(session, user_turn.text)
+                # Echte Wanduhr-Millisekunden dieses Turns (M3): nur Messwert,
+                # fließt NICHT in die logische Clock — Determinismus bleibt.
+                wall_ms = (time.perf_counter() - wall_t0) * 1000.0
                 # Nominal bot processing latency on top of any tool latency.
                 events.clock.advance(self.config.bot_think_ms)
                 latency = events.clock.now_ms - t0
+
+                # Degradations-Erkennung (M3/P1): Adapter-Markierung ODER die
+                # bot-agnostischen Runner-Muster.
+                degraded = bool(response.metadata.get("degraded")) or is_degraded(
+                    response.text, fallback_patterns
+                )
+                if degraded:
+                    events.emit("bot_degraded", turn=turn_index)
 
                 events.emit(
                     "bot_message", turn=turn_index, text=response.text, done=response.done
@@ -132,6 +154,8 @@ class ConversationRunner:
                         user=user_turn.text,
                         bot=response.text,
                         latency_ms=latency,
+                        wall_latency_ms=round(wall_ms, 3),
+                        degraded=degraded,
                     )
                 )
                 history.append({"role": "assistant", "content": response.text})
@@ -141,12 +165,25 @@ class ConversationRunner:
                     break
                 if user_turn.finished or simulator.finished:
                     break
-
-            await self.bot.stop_session(session)
-            events.emit("session_ended")
         except Exception as exc:  # capture and surface as an ERROR result
             error = f"{type(exc).__name__}: {exc}"
             events.emit("run_error", error=error)
+        finally:
+            # stop_session läuft IMMER, auch wenn der Lauf mittendrin crasht
+            # (M3/P2): Adapter räumen dort Sitzungs-Ressourcen auf und
+            # entwaffnen z. B. einen noch scharfen CROSS3-Fault — der sonst in
+            # den nächsten Case durchsickern würde. ``session_ended`` bleibt
+            # wie bisher dem fehlerfreien Lauf vorbehalten.
+            if session is not None:
+                try:
+                    await self.bot.stop_session(session)
+                except Exception as exc:  # pragma: no cover - defensive
+                    if error is None:
+                        error = f"{type(exc).__name__}: {exc}"
+                        events.emit("run_error", error=error)
+                else:
+                    if error is None:
+                        events.emit("session_ended")
 
         conversation.duration_ms = events.clock.now_ms
         return RunArtifacts(

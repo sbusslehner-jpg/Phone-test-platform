@@ -35,11 +35,16 @@ def _percentile(values: list[float], pct: float) -> float:
 
 def _latency_metrics(conversation) -> LatencyMetrics:
     latencies = [float(t.latency_ms) for t in conversation.turns]
+    # Echte Wanduhr-Latenzen (M3) — zusätzlich zur deterministischen logischen
+    # Clock, die unverändert bleibt.
+    wall = [float(t.wall_latency_ms) for t in conversation.turns]
     return LatencyMetrics(
         turns=conversation.turn_count,
         duration_seconds=round(conversation.duration_ms / 1000.0, 3),
         avg_latency_ms=round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
         p95_latency_ms=round(_percentile(latencies, 95), 2),
+        wall_avg_latency_ms=round(sum(wall) / len(wall), 2) if wall else 0.0,
+        wall_p95_latency_ms=round(_percentile(wall, 95), 2),
     )
 
 

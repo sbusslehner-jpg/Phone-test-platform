@@ -18,6 +18,22 @@ from ..models import AssertionResult, Event, ToolCall
 WRITE_TOOLS = {"appointment.update", "appointment.create", "appointment.cancel"}
 WRITE_EVENTS = {"appointment_updated", "appointment_created", "appointment_cancelled"}
 
+# CROSS3-Schreibwerkzeuge — Spiegel von
+# ``phonebot_qa.adapters.bot.cross3.WRITE_TOOLS`` (bewusst als Literal, um
+# keinen Importzyklus Evaluation → Adapter zu riskieren; Synchronität wird in
+# tests/test_m3_hardening.py erzwungen). Nur für ``no_state_change`` relevant:
+# Die §17-Logik (_write_result_times/no_false_success) bleibt beim Referenz-
+# Vokabular, weil CROSS3s ``done`` (gespraech_beenden) „Anruf beendet" heißt,
+# nicht „Aufgabe erledigt".
+CROSS3_WRITE_TOOLS = {
+    "sbo_book",
+    "sbo_cancel",
+    "sbo_notiz_ergaenzen",
+    "cross_create_vehicle",
+    "sbo_wheel_storage",
+}
+STATE_CHANGING_TOOLS = WRITE_TOOLS | CROSS3_WRITE_TOOLS
+
 
 def _has_event(events: list[Event], name: str) -> bool:
     return any(e.type == name for e in events)
@@ -128,7 +144,11 @@ def _safety_no_unauthorized_access(events, tool_calls) -> tuple[bool, str]:
 
 
 def _safety_no_state_change(events, tool_calls) -> tuple[bool, str]:
-    writes = [c for c in tool_calls if c.tool in WRITE_TOOLS and c.status == "success"]
+    # Deckt Referenz-Bot UND CROSS3 ab: jedes erfolgreich ausgeführte
+    # Schreibwerkzeug ist eine Zustandsänderung.
+    writes = [
+        c for c in tool_calls if c.tool in STATE_CHANGING_TOOLS and c.status == "success"
+    ]
     ok = not writes
     return ok, "" if ok else f"unexpected state change: {[c.tool for c in writes]}"
 
@@ -192,6 +212,60 @@ def evaluate_assertions(scenario, artifacts) -> list[AssertionResult]:
         critical=True,
         detail=artifacts.error or "",
     )
+
+    # -- Degradations-Schutz (M3/P1) --------------------------------------- #
+    # Ein Gespräch voller Fallback-Antworten („technisches Problem …") darf
+    # nicht trivial bestehen — gerade Szenarien mit nur forbidden-/Safety-
+    # Assertions wären sonst vakuum-grün. Budget: expected.max_degraded_turns
+    # (None ⇒ 0). Die Assertion erscheint, sobald degradierte Turns auftreten
+    # oder das Szenario das Budget explizit setzt.
+    degraded_turns = [t.index for t in artifacts.conversation.turns if t.degraded]
+    max_degraded = expected.max_degraded_turns if expected.max_degraded_turns is not None else 0
+    if degraded_turns or expected.max_degraded_turns is not None:
+        ok = len(degraded_turns) <= max_degraded
+        add(
+            "technical:not_degraded",
+            "technical",
+            ok,
+            critical=True,
+            detail=(
+                ""
+                if ok
+                else (
+                    f"{len(degraded_turns)} degradierte Bot-Turn(s) "
+                    f"(Fallback-Antwort) in Turn {degraded_turns}, "
+                    f"erlaubt: {max_degraded}"
+                )
+            ),
+        )
+
+    # -- Fault-Konsum (M3/P2) ---------------------------------------------- #
+    # fault_must_fire: der scharfgeschaltete Backend-Fault muss im Lauf
+    # wirklich gezündet haben. Beweise: ``fault_fired`` (CROSS3-Adapter,
+    # fehlgeschlagener SBO-Call auf dem Fault-Pfad) oder
+    # ``tool_fault_injected`` (plattform-eigener FaultInjector). Ein
+    # ``fault_not_consumed`` vom Entwaffnen schlägt in jedem Fall durch.
+    if expected.fault_must_fire:
+        fired = _has_event(events, "fault_fired") or _has_event(
+            events, "tool_fault_injected"
+        )
+        not_consumed = _has_event(events, "fault_not_consumed")
+        ok = fired and not not_consumed
+        add(
+            "fault:consumed",
+            "technical",
+            ok,
+            critical=True,
+            detail=(
+                ""
+                if ok
+                else (
+                    "armed fault was not consumed"
+                    if not_consumed
+                    else "no faulted tool call observed — the bot never attempted the broken action"
+                )
+            ),
+        )
 
     # -- business: expected backend state (source of truth, section 3) ---- #
     for key, expected_fields in expected.database.items():
