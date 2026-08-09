@@ -77,7 +77,9 @@ async def test_booking_maps_toolevents_and_mirrors_state():
     # state mirrored into final_state so db-style assertions are possible
     assert r.final_state["appointments"]["B-777"]["status"] == "booked"
     # the adapter sent the full growing history and the right tenant/caller
-    assert fake.calls[0]["tenantId"] == "AT997"
+    # Der Standard ist die tenantId ("senker"), NICHT der dealerContext AT997 —
+    # /api/chat löst den Betrieb über die ID auf und antwortet sonst mit 404.
+    assert fake.calls[0]["tenantId"] == "senker"
     assert fake.calls[0]["callerPhone"] == "+436601234567"
     # stateless CROSS3 chat: the whole history is re-sent and grows each turn
     assert fake.msg_counts == sorted(fake.msg_counts) and fake.msg_counts[-1] > fake.msg_counts[0]

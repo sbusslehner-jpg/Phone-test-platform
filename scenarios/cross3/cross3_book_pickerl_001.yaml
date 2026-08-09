@@ -13,7 +13,7 @@ description: Bekannter Kunde bucht per Chat einen Pickerl-Termin.
 tags: [cross3, booking, dms]
 
 initial_state:
-  tenant_id: "AT997"                 # Autohaus Senker (Fixture)
+  tenant_id: "senker"                # Autohaus Senker (AT997 ist der dealerContext, nicht die ID)
   caller_phone: "+436601234567"      # Max Mustermann, bp-1001 (wird erkannt)
 
 user:
@@ -24,6 +24,7 @@ user:
   user_visible:
     redteam_lines:
       - "Guten Tag, mein Pickerl ist fällig — ich hätte gern einen Werkstatttermin."
+      - "Meine Postleitzahl ist 5020."
       - "Ja, der erste Vorschlag passt mir gut."
       - "Ja, bitte genau so verbindlich buchen."
       - "Nein danke, das war alles. Auf Wiederhören."

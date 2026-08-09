@@ -24,7 +24,9 @@ deterministic assertions work unchanged — no core change to the platform:
 
 Per-case inputs are read from ``scenario.initial_state``:
 
-``tenant_id``      CROSS3 tenant (e.g. ``"AT997"``). Default ``"AT997"``.
+``tenant_id``      CROSS3 tenant **id** (e.g. ``"senker"``) — NOT the dealer
+                   context ``AT997``, which is a different field. Default
+                   ``"senker"``.
 ``caller_phone``   Verified caller number; empty/absent ⇒ unknown caller
                    (drives CROSS3's customer-recognition invariant).
 
@@ -39,6 +41,7 @@ stubbed transport (see ``tests/test_cross3_adapter.py``).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -92,10 +95,11 @@ class Cross3Adapter(BotAdapter):
         self,
         base_url: str = "http://127.0.0.1:8080",
         *,
-        tenant_id: str = "AT997",
+        tenant_id: str = "senker",
         version: str = "cross3-candidate",
         timeout: float = 30.0,
         persona: str = "service",
+        admin_token: str | None = None,
         chat_fn: ChatFn | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -103,9 +107,20 @@ class Cross3Adapter(BotAdapter):
         self.version = version
         self.timeout = timeout
         self.persona = persona
+        # Für den Test-Fault-Hook (/api/admin/test-fault). Ohne Token bleibt die
+        # Fehler-Injektion wirkungslos — das Szenario merkt das an seinen
+        # Erwartungen, statt still durchzulaufen.
+        self.admin_token = admin_token or os.environ.get("CROSS3_ADMIN_TOKEN") or ""
         # Injectable transport: real httpx by default, a stub in unit tests.
         self._chat_fn = chat_fn
         self._client = None
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        """CROSS3 lehnt Requests ohne Origin/Referer grundsätzlich mit 403 ab
+        (Schutz gegen fremde Seiten). Ein Testlauf ist ein legitimer
+        Erstanbieter-Aufruf — wir weisen uns entsprechend aus."""
+        return {"Origin": self.base_url}
 
     # -- transport --------------------------------------------------------- #
 
@@ -119,7 +134,9 @@ class Cross3Adapter(BotAdapter):
                 raise RuntimeError(
                     "Cross3Adapter requires httpx: pip install 'phonebot-qa[api]'"
                 ) from exc
-            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url, timeout=self.timeout, headers=self._headers
+            )
         resp = await self._client.post("/api/chat", json=payload)  # pragma: no cover
         resp.raise_for_status()  # pragma: no cover
         return resp.json()  # pragma: no cover
@@ -145,19 +162,29 @@ class Cross3Adapter(BotAdapter):
         return session
 
     async def _arm_fault(self, directive: Any) -> None:  # pragma: no cover - needs CROSS3 hook
-        """Arm a one-shot backend fault in CROSS3's mock before the call."""
+        """Arm a one-shot backend fault in CROSS3 before the call.
+
+        Läuft über ``POST /api/admin/test-fault`` (Admin-Token), nicht über die
+        Mock-Routen selbst: die sind seit dem Sicherheits-Audit von außen dicht
+        (prozesslokales Token), ein Fehler lässt sich dort nicht mehr per
+        Query-Parameter einschleusen.
+        """
         if self._chat_fn is not None:
             return  # stubbed transport in unit tests: nothing to arm
-        try:
-            import httpx
+        if not self.admin_token:
+            raise RuntimeError(
+                "cross3_fault im Szenario, aber kein Admin-Token: CROSS3_ADMIN_TOKEN setzen "
+                "oder Cross3Adapter(admin_token=...) übergeben."
+            )
+        import httpx
 
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as c:
-                await c.post("/mock/sbo/_test/fault", json=directive)
-        except Exception:
-            # The hook may not be deployed yet; the scenario will then simply
-            # not see a fault (and its no-change expectations would not hold) —
-            # better to surface that than to crash the run.
-            pass
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as c:
+            resp = await c.post(
+                "/api/admin/test-fault",
+                json=directive,
+                headers={**self._headers, "Authorization": f"Bearer {self.admin_token}"},
+            )
+            resp.raise_for_status()
 
     async def send_text(self, session: BotSession, message: str) -> BotResponse:
         st = session.state

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,7 +40,22 @@ _BOT_BEHAVIORS = {
 }
 
 
-def build_bot(version: str) -> ReferenceAppointmentBot:
+def build_bot(version: str, args=None):
+    """Bot unter Test aufbauen.
+
+    Standard ist der eingebaute Referenz-Bot (deterministisch, offline). Mit
+    ``--bot cross3`` wird stattdessen der echte CROSS3-Serviceagent über seinen
+    Text-Kanal gefahren — derselbe Agent-Kern wie Telefon und WhatsApp.
+    """
+    ziel = getattr(args, "bot", "reference") if args is not None else "reference"
+    if ziel == "cross3":
+        from .adapters.bot import Cross3Adapter
+
+        return Cross3Adapter(
+            base_url=getattr(args, "base_url", None) or os.environ.get("CROSS3_BASE_URL", "http://127.0.0.1:8080"),
+            tenant_id=getattr(args, "tenant", None) or os.environ.get("CROSS3_TENANT", "senker"),
+            version=version,
+        )
     return ReferenceAppointmentBot(version=version, behavior=_BOT_BEHAVIORS.get(version))
 
 
@@ -203,7 +219,7 @@ def cmd_run(args) -> int:
     if not scenarios:
         print(f"No scenarios found for suite {args.suite!r}", file=sys.stderr)
         return 2
-    bot = build_bot(args.bot_version)
+    bot = build_bot(args.bot_version, args)
     summary = asyncio.run(_run_summary(args, scenarios, bot))
     _print_summary(summary)
     if args.json:
@@ -228,8 +244,8 @@ def cmd_gate(args) -> int:
     if not scenarios:
         print(f"No scenarios found for suite {args.suite!r}", file=sys.stderr)
         return 2
-    baseline_bot = build_bot(args.baseline_version)
-    candidate_bot = build_bot(args.candidate_version)
+    baseline_bot = build_bot(args.baseline_version, args)
+    candidate_bot = build_bot(args.candidate_version, args)
     baseline = asyncio.run(_run_summary(args, scenarios, baseline_bot))
     candidate = asyncio.run(_run_summary(args, scenarios, candidate_bot))
     result = release_gate(candidate, baseline, min_success_delta=args.min_delta)
@@ -262,7 +278,7 @@ def cmd_replay(args) -> int:
     if not cases_meta:
         print(f"No regression cases in {args.store}", file=sys.stderr)
         return 2
-    bot = build_bot(args.bot_version)
+    bot = build_bot(args.bot_version, args)
     personas = dict(_load_personas(args.personas_dir))
     # Replay each case with its EXACT captured seed, persona and mode — not the
     # CLI defaults — so seed/persona-specific failures actually reproduce.
@@ -307,7 +323,7 @@ def cmd_voice(args) -> int:
     if not scenarios:
         print(f"No scenarios found for suite {args.suite!r}", file=sys.stderr)
         return 2
-    bot = build_bot(args.bot_version)
+    bot = build_bot(args.bot_version, args)
     args.modes = ["voice"]
     # ``None`` means "leave each scenario's own profile alone" (no override).
     profiles = args.profiles or [args.audio_profile]
@@ -350,7 +366,7 @@ def cmd_discover(args) -> int:
     from .discovery import DiscoveryEngine
 
     seeds = _load_suite(args.suite, args.scenarios_dir) if args.suite else []
-    bot = build_bot(args.bot_version)
+    bot = build_bot(args.bot_version, args)
     store = RegressionStore(args.capture_regressions) if args.capture_regressions else None
     engine = DiscoveryEngine(
         bot,
@@ -440,6 +456,14 @@ def cmd_serve(args) -> int:
 
 
 def _add_run_opts(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--bot",
+        default="reference",
+        choices=["reference", "cross3"],
+        help="Bot unter Test: eingebauter Referenz-Bot oder der echte CROSS3-Agent",
+    )
+    p.add_argument("--base-url", default=None, help="Basis-URL des CROSS3-Agenten (--bot cross3)")
+    p.add_argument("--tenant", default=None, help="CROSS3-Betrieb, z.B. senker (--bot cross3)")
     p.add_argument("--scenarios-dir", default="scenarios", help="scenario root directory")
     p.add_argument("--personas-dir", default="personas", help="persona root directory")
     p.add_argument("--persona", action="append", default=None, help="restrict to persona id (repeatable)")
