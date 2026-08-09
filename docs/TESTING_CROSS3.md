@@ -126,13 +126,44 @@ leitet keine Tool-Calls durch — die laufen intern in der Bridge). Ob eine per
 Voice ausgelöste Buchung wirklich gelandet ist, prüfst du durch einen Lese-Aufruf
 auf den SBO-Mock nach dem Anruf.
 
-Zwei ehrliche Grenzen des Voice-Pfads:
+### Voll gescorter Lauf: `Cross3VoiceRunner`
+
+Der turn-basierte Runner (`phonebot_qa/runner/cross3_voice.py`) verdrahtet den
+Client in die bestehende Evaluation: skripteter Caller → TTS (8 kHz) → Audio-Chaos
+→ CROSS3 → Bot-Audio zurück, und erzeugt dieselben `RunArtifacts` wie der
+Text-Pfad. Damit greifen Antwortlatenz (§18), Barge-in gegen die 300-ms-SLA (§14),
+Hangup und — mit echtem STT — Gesprächsqualität. Backend-Wahrheit kommt aus einem
+injizierten `state_reader` (liest den SBO-Mock nach dem Anruf).
+
+```python
+import asyncio
+from phonebot_qa.adapters.transport import Cross3VoicePhoneClient
+from phonebot_qa.runner import run_cross3_voice_suite
+from phonebot_qa.scenario.loader import load_scenarios
+
+def factory():
+    return Cross3VoicePhoneClient("ws://127.0.0.1:8080", relay_token="<RELAY_TOKEN>")
+
+async def read_sbo(client):        # optional: Backend-State nach dem Anruf lesen
+    ...                            # GET /mock/sbo/.../appointment/detail → {"appointments": [...]}
+    return {}
+
+scns = load_scenarios("scenarios/cross3")   # Szenarien mit audio.did/barge_in
+summary = asyncio.run(run_cross3_voice_suite(
+    scns, factory, stt=None, state_reader=read_sbo, seeds=[0, 1, 2]))
+print(summary.pass_rate)
+```
+
+Voice-Szenarien deklarieren die Anbindung im `initial_state` (`did`, `caller_phone`)
+und Barge-in im `audio`-Block (`barge_in: {interrupt_after_ms}`, `barge_in_sla_ms`).
+
+Zwei ehrliche Grenzen des Voice-Pfads bleiben:
 - **STT zum Scoren:** was CROSS3 *gesagt* hat, kennt die Plattform nur über einen
-  **echten** `STTEngine` auf `reply.to_buffer()`. Der deterministische Simulator-STT
-  kennt nur die selbst erzeugten Audios, nicht CROSS3s Antworten.
-- **Turn-Modell:** der Relay-Stream ist voll-duplex; der Client schneidet Turns
-  über eine Stille-Lücke. Ein voll gescorter, turn-basierter Lauf über den echten
-  VoiceRunner ist der nächste Ausbauschritt (der Protokoll-Client dafür steht).
+  **echten** `STTEngine` auf dem Bot-Audio. Ohne STT bleibt das Bot-Transkript
+  leer — Barge-in/Latenz/Hangup scoren trotzdem, Gesprächsqualität nicht.
+- **Turn-Modell:** der Relay-Stream ist voll-duplex; der Runner schneidet Turns
+  über eine Stille-Lücke (VAD-Näherung). Für sehr überlappende Dialoge ist das
+  eine Vereinfachung gegenüber dem echten kontinuierlichen Stream.
 
 ## Zwei ehrliche Einschränkungen (Chat)
 
