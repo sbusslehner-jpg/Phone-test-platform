@@ -7,6 +7,7 @@ actual client drives it over a real websocket. No CROSS3 and no Azure needed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -148,6 +149,94 @@ async def test_hangup_ends_the_call():
         assert turn.ended is True
         assert turn.hangup_reason == "test_end"
         assert client.ended is True
+        await client.close()
+
+
+async def test_transfer_ends_the_call():
+    """A ``{"type":"transfer"}`` control frame ends the call, like a hangup."""
+
+    async def handler(ws):
+        await ws.recv()  # start
+        await ws.send(json.dumps({"type": "transfer", "to": "+43512555000"}))
+        await ws.close()
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = Cross3VoicePhoneClient(f"ws://127.0.0.1:{port}", relay_token=TOKEN)
+        await client.connect(did="AT997")
+        turn = await client.next_bot_turn(quiet_ms=120, max_ms=2000)
+        assert turn.ended is True
+        assert turn.transferred_to == "+43512555000"
+        assert turn.hangup_reason == "transfer"
+        assert client.ended is True
+        await client.close()
+
+
+async def test_barge_in_probe_paces_and_measures_stop_latency():
+    """The probe streams the interrupt in real time and times the app's ``clear``.
+
+    The stop latency is measured from the *first* interrupt frame (when the
+    caller starts talking over the bot), and the caller audio lost equals that
+    latency — the bot held the floor for exactly that long (§14).
+    """
+
+    async def handler(ws):
+        await ws.recv()  # start
+        for _ in range(20):  # a greeting long enough to talk over
+            await ws.send(_bot_frames(1))
+        cleared = False
+        try:
+            async for msg in ws:
+                if isinstance(msg, (bytes, bytearray)):
+                    if not cleared:  # clear on speech_started (first frame)
+                        cleared = True
+                        await asyncio.sleep(0.02)  # realistic reaction time
+                        await ws.send(json.dumps({"type": "clear"}))
+                elif json.loads(msg).get("type") == "stop":
+                    break
+        except Exception:
+            pass
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = Cross3VoicePhoneClient(f"ws://127.0.0.1:{port}", relay_token=TOKEN)
+        await client.connect(did="AT997-bargein")
+        turn = await client.bot_turn_with_barge_in(
+            _bot_frames(20), interrupt_after_ms=20, quiet_ms=120
+        )
+        assert turn.interrupt_attempted is True
+        assert turn.barge_in is True
+        assert turn.stop_latency_ms is not None and turn.stop_latency_ms > 0
+        assert turn.user_audio_lost_ms == turn.stop_latency_ms
+        await client.close()
+
+
+async def test_barge_in_probe_not_attempted_when_turn_too_short():
+    """If the bot's turn is too short to reach ``interrupt_after_ms``, the probe
+    never fires — ``interrupt_attempted`` stays False so the runner can report
+    *the test did not run* instead of a false *bot did not stop*."""
+
+    async def handler(ws):
+        await ws.recv()  # start
+        for _ in range(3):  # a very short greeting
+            await ws.send(_bot_frames(1))
+        try:
+            async for msg in ws:
+                if not isinstance(msg, (bytes, bytearray)) and json.loads(msg).get("type") == "stop":
+                    break
+        except Exception:
+            pass
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = Cross3VoicePhoneClient(f"ws://127.0.0.1:{port}", relay_token=TOKEN)
+        await client.connect(did="AT997-bargein")
+        turn = await client.bot_turn_with_barge_in(
+            _bot_frames(5), interrupt_after_ms=5000, quiet_ms=100
+        )
+        assert turn.interrupt_attempted is False
+        assert turn.barge_in is False
+        assert turn.stop_latency_ms is None
         await client.close()
 
 

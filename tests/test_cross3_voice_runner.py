@@ -44,18 +44,25 @@ async def _handler(ws):
     did = start.get("did", "")
     await _send_burst(ws)  # greeting (bot speaks first)
 
+    # Some agents end the call the instant they finish greeting (no anliegen).
+    if "greethangup" in did:
+        await ws.send(json.dumps({"type": "hangup", "reason": "kein_anliegen"}))
+        return
+
     caller_frames = 0
     replied = 0
+    cleared = False
     while True:
         try:
             msg = await asyncio.wait_for(ws.recv(), timeout=0.03)
         except asyncio.TimeoutError:
             if caller_frames > replied:  # caller went quiet → react (VAD-like)
                 replied = caller_frames
-                if "bargein" in did:
-                    await ws.send(json.dumps({"type": "clear"}))
                 if "hangup" in did:
                     await ws.send(json.dumps({"type": "hangup", "reason": "agent_ende"}))
+                    break
+                if "transfer" in did:
+                    await ws.send(json.dumps({"type": "transfer", "to": "+43512555000"}))
                     break
                 await _send_burst(ws)
             continue
@@ -63,6 +70,14 @@ async def _handler(ws):
             break
         if isinstance(msg, (bytes, bytearray)):
             caller_frames += 1
+            # Barge-in: Azure semantic-VAD clears the bot's own audio on
+            # speech_STARTED — the first frame the caller talks over the bot,
+            # not after they go quiet. A small, deterministic reaction delay
+            # keeps the measured stop latency non-zero and well within SLA.
+            if "bargein" in did and not cleared:
+                cleared = True
+                await asyncio.sleep(0.02)
+                await ws.send(json.dumps({"type": "clear"}))
         else:
             data = json.loads(msg)
             if data.get("type") == "stop":
@@ -181,3 +196,41 @@ async def test_state_reader_enables_backend_assertion():
     r = summary.results[0]
     assert r.result == "PASS", r.critical_failure
     assert r.final_state["appointments"]["A997-1"]["status"] == "booked"
+
+
+async def test_transfer_ends_the_call():
+    async with _Server() as srv:
+        scn = _scenario("AT997-transfer", lines=["Ich möchte bitte einen Mitarbeiter sprechen."])
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    # A hand-off to a human is a transfer event, not a spurious run error.
+    assert any(e.type == "transfer" for e in r.events)
+    assert not any(e.type == "run_error" for e in r.events)
+
+
+async def test_greeting_hangup_is_not_a_run_error():
+    async with _Server() as srv:
+        scn = _scenario("AT997-greethangup", lines=["Hallo?"])
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    # The agent hung up at the greeting: emit the end, skip the turn loop —
+    # never surface it as a run error (which would force a false FAIL).
+    assert any(e.type == "hangup" for e in r.events)
+    assert not any(e.type == "run_error" for e in r.events)
+    assert r.error is None
+
+
+async def test_barge_in_that_never_fired_fails_as_not_run():
+    async with _Server() as srv:
+        # Greeting is far too short to still be talking after 5 s, so the probe
+        # never fires. That must read as "the test did not run", not a false
+        # "bot did not stop" — a distinct, honest, critical failure.
+        scn = _scenario(
+            "AT997-normal",
+            audio={"profile": "clean", "barge_in": {"interrupt_after_ms": 5000}, "barge_in_sla_ms": 300},
+        )
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    assert r.result == "FAIL"
+    assert "barge_in_attempted" in (r.critical_failure or "")
+    assert r.voice.barge_in_detected is None

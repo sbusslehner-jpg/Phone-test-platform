@@ -8,9 +8,10 @@ The Asterisk relay is deliberately dumb: it authenticates with ``x-relay-token``
 sends one ``{"type":"start", did, callerId, callUuid, format:"slin"}`` text frame,
 then streams **binary SLIN audio** (8 kHz, 16-bit LE mono) in both directions.
 Control text frames flow app→relay: ``{"type":"clear"}`` on barge-in (the app
-cancelled its response because the caller spoke over it) and
-``{"type":"hangup", reason}`` at end; the relay sends ``{"type":"stop"}`` when the
-caller hangs up.
+cancelled its response because the caller spoke over it), ``{"type":"hangup",
+reason}`` when the agent ends the call, and ``{"type":"transfer", to}`` when it
+hands off to a human — both end the call. The relay sends ``{"type":"stop"}``
+when the caller hangs up.
 
 This client **is the relay** for testing purposes: it speaks that exact protocol,
 so the platform can drive CROSS3's real voice bridge (media handling, Azure
@@ -42,6 +43,7 @@ from ...audio.buffer import AudioBuffer
 #: SLIN telephony audio: 8 kHz, 16-bit LE mono; 20 ms == 320 bytes == 160 samples.
 SLIN_SAMPLE_RATE = 8000
 SLIN_FRAME_BYTES = 320
+SLIN_FRAME_MS = 20
 
 
 @dataclass
@@ -50,9 +52,14 @@ class BotTurn:
 
     audio: bytes = b""  # raw SLIN16 8 kHz
     barge_in: bool = False  # the app sent {"type":"clear"} (it detected an interrupt)
-    ended: bool = False  # the call ended (hangup / stop / socket close)
+    ended: bool = False  # the call ended (hangup / stop / transfer / socket close)
     hangup_reason: str | None = None
+    transferred_to: str | None = None  # the app sent {"type":"transfer", to}
     control: list[dict] = field(default_factory=list)  # every text frame seen
+    # Whether this turn actually fired a barge-in probe (streamed interrupt
+    # audio over the bot). A plain turn leaves this False; only then is a missing
+    # {"type":"clear"} a real "bot did not stop", not "we never interrupted".
+    interrupt_attempted: bool = False
     # Barge-in timing (only set by a barge-in probe): how long after the caller
     # started talking over the bot the app acknowledged with {"type":"clear"}.
     stop_latency_ms: int | None = None
@@ -130,6 +137,28 @@ class Cross3VoicePhoneClient:
         for i in range(0, len(pcm), SLIN_FRAME_BYTES):
             await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
 
+    async def _send_paced(self, pcm: bytes, *, on_first=None) -> None:
+        """Stream caller audio as *wall-clock-paced* 20 ms SLIN frames.
+
+        Unlike :meth:`send_audio` (which bursts every frame into the socket as
+        fast as the OS accepts it), this sleeps 20 ms between frames so the
+        interrupt reaches the bot in real time. Barge-in stop latency then
+        measures the app's actual reaction — not how fast a send buffer drains.
+        ``on_first`` fires just before the first frame goes out: the instant the
+        caller starts talking over the bot. Cancel the task to stop early (the
+        app acknowledged with ``clear``, so there is no need to keep talking).
+        """
+        import asyncio
+
+        first = True
+        for i in range(0, len(pcm), SLIN_FRAME_BYTES):
+            if first:
+                if on_first is not None:
+                    on_first()
+                first = False
+            await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
+            await asyncio.sleep(SLIN_FRAME_MS / 1000.0)
+
     async def next_bot_turn(self, *, quiet_ms: int = 600, max_ms: int = 20000) -> BotTurn:
         """Collect bot audio until it goes quiet, or a control frame arrives.
 
@@ -182,6 +211,13 @@ class Cross3VoicePhoneClient:
             kind = data.get("type")
             if kind == "clear":
                 turn.barge_in = True
+            elif kind == "transfer":
+                # Hand-off to a human ends this call leg just like a hangup.
+                turn.ended = True
+                turn.transferred_to = data.get("to")
+                turn.hangup_reason = "transfer"
+                self.ended = True
+                break
             elif kind in ("hangup", "stop"):
                 turn.ended = True
                 turn.hangup_reason = data.get("reason") or kind
@@ -201,11 +237,20 @@ class Cross3VoicePhoneClient:
     ) -> BotTurn:
         """Collect a bot turn, talk over it mid-way, and measure the reaction.
 
-        Waits until the bot has been speaking for ``interrupt_after_ms``, streams
-        the caller's interrupting audio, and records how long the app took to
-        acknowledge with ``{"type":"clear"}`` (``stop_latency_ms``) plus how much
-        bot audio still played afterwards (``user_audio_lost_ms``). This is the
-        concept's barge-in test (§14) over CROSS3's real protocol.
+        Waits until the bot has been speaking for ``interrupt_after_ms``, then
+        streams the caller's interrupting audio *paced in real time* (20 ms per
+        frame, in a background task) and records how long the app took to
+        acknowledge with ``{"type":"clear"}`` (``stop_latency_ms``). Because the
+        interrupt is paced — not burst — that latency is the app's genuine
+        reaction from the moment the caller began talking, and ``clear`` cancels
+        the remaining interrupt (there is no point talking once the bot stopped).
+        ``user_audio_lost_ms`` equals the stop latency: the bot kept its floor
+        for exactly that long after the caller started (concept §14).
+
+        ``interrupt_attempted`` records whether the probe actually fired — if the
+        bot's turn was too short to ever reach ``interrupt_after_ms``, it stays
+        ``False`` so the runner can report *the test did not run* rather than a
+        false "bot did not stop".
         """
         import asyncio
 
@@ -225,66 +270,87 @@ class Cross3VoicePhoneClient:
         first_audio_at: float | None = None
         last_audio_at: float | None = None
         interrupt_at: float | None = None
-        bytes_after_interrupt = 0
+        send_task: asyncio.Future | None = None
 
-        while True:
-            now = loop.time()
-            if now >= deadline:
-                break
-            # Fire the interrupt once the bot has been speaking long enough.
-            if (
-                interrupt_at is None
-                and first_audio_at is not None
-                and (now - first_audio_at) * 1000 >= interrupt_after_ms
-            ):
-                await self.send_audio(interrupt)
-                interrupt_at = loop.time()
-            try:
-                msg = await asyncio.wait_for(self._ws.recv(), timeout=poll)
-            except asyncio.TimeoutError:
-                # End the turn once the bot has gone quiet for quiet_ms.
-                if (
-                    chunks
-                    and last_audio_at is not None
-                    and (loop.time() - last_audio_at) * 1000 >= quiet_ms
-                ):
+        def _mark_interrupt_start() -> None:
+            # The caller's first interrupt frame is going out now.
+            nonlocal interrupt_at
+            interrupt_at = loop.time()
+
+        try:
+            while True:
+                now = loop.time()
+                if now >= deadline:
                     break
-                continue
-            except Exception:
-                turn.ended = True
-                self.ended = True
-                break
+                # Fire the paced interrupt once the bot has been speaking long
+                # enough. It runs concurrently with the receive loop below.
+                if (
+                    send_task is None
+                    and first_audio_at is not None
+                    and (now - first_audio_at) * 1000 >= interrupt_after_ms
+                ):
+                    turn.interrupt_attempted = True
+                    send_task = asyncio.ensure_future(
+                        self._send_paced(interrupt, on_first=_mark_interrupt_start)
+                    )
+                try:
+                    msg = await asyncio.wait_for(self._ws.recv(), timeout=poll)
+                except asyncio.TimeoutError:
+                    # End the turn once the bot has gone quiet for quiet_ms.
+                    if (
+                        chunks
+                        and last_audio_at is not None
+                        and (loop.time() - last_audio_at) * 1000 >= quiet_ms
+                    ):
+                        break
+                    continue
+                except Exception:
+                    turn.ended = True
+                    self.ended = True
+                    break
 
-            if isinstance(msg, (bytes, bytearray)):
-                now2 = loop.time()
-                if first_audio_at is None:
-                    first_audio_at = now2
-                    turn.first_audio_latency_ms = int((now2 - start) * 1000)
-                last_audio_at = now2
-                chunks.append(bytes(msg))
-                if interrupt_at is not None:
-                    bytes_after_interrupt += len(msg)
-                continue
+                if isinstance(msg, (bytes, bytearray)):
+                    now2 = loop.time()
+                    if first_audio_at is None:
+                        first_audio_at = now2
+                        turn.first_audio_latency_ms = int((now2 - start) * 1000)
+                    last_audio_at = now2
+                    chunks.append(bytes(msg))
+                    continue
 
-            try:
-                data = json.loads(msg)
-            except (ValueError, TypeError):
-                continue
-            turn.control.append(data)
-            kind = data.get("type")
-            if kind == "clear":
-                turn.barge_in = True
-                if interrupt_at is not None:
-                    turn.stop_latency_ms = int((loop.time() - interrupt_at) * 1000)
-                turn.user_audio_lost_ms = int(
-                    1000 * (bytes_after_interrupt // 2) / SLIN_SAMPLE_RATE
-                )
-                break
-            if kind in ("hangup", "stop"):
-                turn.ended = True
-                turn.hangup_reason = data.get("reason") or kind
-                self.ended = True
-                break
+                try:
+                    data = json.loads(msg)
+                except (ValueError, TypeError):
+                    continue
+                turn.control.append(data)
+                kind = data.get("type")
+                if kind == "clear":
+                    turn.barge_in = True
+                    if interrupt_at is not None:
+                        turn.stop_latency_ms = int((loop.time() - interrupt_at) * 1000)
+                        # The caller kept the bot talking over them for exactly
+                        # the stop latency; that is the audio they lost (§14).
+                        turn.user_audio_lost_ms = turn.stop_latency_ms
+                    break
+                if kind == "transfer":
+                    turn.ended = True
+                    turn.transferred_to = data.get("to")
+                    turn.hangup_reason = "transfer"
+                    self.ended = True
+                    break
+                if kind in ("hangup", "stop"):
+                    turn.ended = True
+                    turn.hangup_reason = data.get("reason") or kind
+                    self.ended = True
+                    break
+        finally:
+            # Stop talking over the bot: the probe is done (clear/hangup/quiet).
+            if send_task is not None and not send_task.done():
+                send_task.cancel()
+                try:
+                    await send_task
+                except (asyncio.CancelledError, Exception):  # pragma: no cover
+                    pass
 
         turn.audio = b"".join(chunks)
         return turn

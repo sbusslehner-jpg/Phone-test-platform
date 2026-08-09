@@ -110,8 +110,13 @@ class Cross3VoiceRunner:
                     interrupt_after_ms=cfg.barge_in.interrupt_after_ms,
                     quiet_ms=self.quiet_ms,
                 )
-                self._record_barge_in(events, greeting, cfg, turn_index=0)
-                barge_records.append(self._barge_dict(greeting, cfg))
+                # Only score barge-in if the probe actually fired. A greeting too
+                # short to talk over leaves interrupt_attempted False → record
+                # nothing, so voice_assertions reports "the test did not run"
+                # (voice:barge_in_attempted) rather than a false "bot did not stop".
+                if greeting.interrupt_attempted:
+                    self._record_barge_in(events, greeting, cfg, turn_index=0)
+                    barge_records.append(self._barge_dict(greeting, cfg))
             else:
                 greeting = await client.next_bot_turn(quiet_ms=self.quiet_ms)
             self._emit_bot_turn(events, greeting, turn=0)
@@ -119,47 +124,53 @@ class Cross3VoiceRunner:
             last_bot = greet_text or None
 
             turn_index = 0
-            while True:
-                if turn_index >= scenario.limits.max_turns:
-                    events.emit("limit_reached", reason="max_turns")
-                    break
-                user_turn = await simulator.next_turn(history, last_bot)
-                if not user_turn.text and (user_turn.finished or simulator.finished):
-                    break
+            if greeting.ended:
+                # The agent ended the call at the greeting (hangup or transfer) —
+                # emit the end event and skip the turn loop; the socket is closed,
+                # so trying to speak would surface as a spurious run error (§12.2).
+                self._emit_call_end(events, greeting, turn=0)
+            else:
+                while True:
+                    if turn_index >= scenario.limits.max_turns:
+                        events.emit("limit_reached", reason="max_turns")
+                        break
+                    user_turn = await simulator.next_turn(history, last_bot)
+                    if not user_turn.text and (user_turn.finished or simulator.finished):
+                        break
 
-                turn_index += 1
-                events.emit("user_audio_started", turn=turn_index, text=user_turn.text)
-                caller_audio = self._caller_audio(user_turn.text, chaos)
-                t0 = time.monotonic()
-                await client.send_audio(caller_audio)
-                events.emit(
-                    "user_audio_finished", turn=turn_index, audio_ms=caller_audio.duration_ms
-                )
+                    turn_index += 1
+                    events.emit("user_audio_started", turn=turn_index, text=user_turn.text)
+                    caller_audio = self._caller_audio(user_turn.text, chaos)
+                    t0 = time.monotonic()
+                    await client.send_audio(caller_audio)
+                    events.emit(
+                        "user_audio_finished", turn=turn_index, audio_ms=caller_audio.duration_ms
+                    )
 
-                bot_turn = await client.next_bot_turn(quiet_ms=self.quiet_ms)
-                latency = bot_turn.first_audio_latency_ms
-                if latency is None:
-                    latency = int((time.monotonic() - t0) * 1000)
+                    bot_turn = await client.next_bot_turn(quiet_ms=self.quiet_ms)
+                    latency = bot_turn.first_audio_latency_ms
+                    if latency is None:
+                        latency = int((time.monotonic() - t0) * 1000)
 
-                bot_text, wer = self._transcribe(bot_turn)
-                if wer is not None:
-                    wer_values.append(wer)
-                events.emit("stt_started", turn=turn_index)
-                events.emit("stt_finished", turn=turn_index, text=bot_text, wer=wer)
-                self._emit_bot_turn(events, bot_turn, turn=turn_index, latency=latency)
+                    bot_text, wer = self._transcribe(bot_turn)
+                    if wer is not None:
+                        wer_values.append(wer)
+                    events.emit("stt_started", turn=turn_index)
+                    events.emit("stt_finished", turn=turn_index, text=bot_text, wer=wer)
+                    self._emit_bot_turn(events, bot_turn, turn=turn_index, latency=latency)
 
-                conversation.turns.append(
-                    Turn(index=turn_index, user=user_turn.text, bot=bot_text, latency_ms=latency)
-                )
-                history.append({"role": "user", "content": user_turn.text})
-                history.append({"role": "assistant", "content": bot_text})
-                last_bot = bot_text or last_bot
+                    conversation.turns.append(
+                        Turn(index=turn_index, user=user_turn.text, bot=bot_text, latency_ms=latency)
+                    )
+                    history.append({"role": "user", "content": user_turn.text})
+                    history.append({"role": "assistant", "content": bot_text})
+                    last_bot = bot_text or last_bot
 
-                if bot_turn.ended:
-                    events.emit("hangup", turn=turn_index, reason=bot_turn.hangup_reason)
-                    break
-                if user_turn.finished or simulator.finished:
-                    break
+                    if bot_turn.ended:
+                        self._emit_call_end(events, bot_turn, turn=turn_index)
+                        break
+                    if user_turn.finished or simulator.finished:
+                        break
 
             # Backend truth: read CROSS3's mock state (did the booking land?).
             if self.state_reader is not None:
@@ -211,6 +222,14 @@ class Cross3VoiceRunner:
         events.emit("bot_audio_finished", turn=turn)
         if latency is not None:
             events.emit("turn_completed", turn=turn, latency_ms=latency)
+
+    def _emit_call_end(self, events, bot_turn, *, turn) -> None:
+        # The agent ended the call: a hand-off to a human is a transfer, anything
+        # else is a hangup. Both stop the conversation (concept §12.2).
+        if bot_turn.transferred_to is not None or bot_turn.hangup_reason == "transfer":
+            events.emit("transfer", turn=turn, to=bot_turn.transferred_to)
+        else:
+            events.emit("hangup", turn=turn, reason=bot_turn.hangup_reason)
 
     def _barge_dict(self, turn, cfg) -> dict:
         within = None

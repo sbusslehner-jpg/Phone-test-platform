@@ -34,7 +34,10 @@ deepeval = [
 ]
 voice = [
     # Voice end-to-end client for CROSS3's /ws/phone-media relay protocol (§12.2).
-    "websockets>=12",
+    # >=14: the client uses connect(additional_headers=...) to send x-relay-token,
+    # which is the modern asyncio API (renamed from extra_headers in 14.0). On
+    # 12.x/13.x the token header would be silently dropped and every call 4401s.
+    "websockets>=14",
 ]
 dev = [
     "pytest>=8.0",
