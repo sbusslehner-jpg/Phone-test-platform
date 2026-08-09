@@ -1,0 +1,11 @@
+# Example persona authored as YAML (section 9). Personas are orthogonal to
+# scenarios and can be combined with any of them.
+id: impatient_customer
+description: Ungeduldiger Anrufer, der schnell ans Ziel möchte.
+patience: low
+verbosity: short
+tech_savvy: medium
+language_proficiency: high
+interruption_probability: 0.4
+correction_probability: 0.2
+off_topic_probability: 0.1

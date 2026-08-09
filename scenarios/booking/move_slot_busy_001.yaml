@@ -1,0 +1,44 @@
+# Unhappy path with recovery: the desired slot is busy, the bot offers to take
+# another time, and the caller supplies an available alternative.
+id: move_slot_busy_001
+description: >
+  Der gewünschte Zeitpunkt ist belegt; der Kunde weicht auf eine
+  freie Alternative aus.
+tags: [booking, unhappy_path]
+
+initial_state:
+  session_customer_id: customer_5
+  customers:
+    - id: customer_5
+      name: Clara Claus
+  appointments:
+    - id: apt_5
+      customer_id: customer_5
+      datetime: "2026-08-20T08:00:00+02:00"
+  # The requested slot is marked busy so availability.search returns false.
+  busy_slots:
+    - "2026-08-21T09:00:00+02:00"
+
+user:
+  goal:
+    type: move_appointment
+    target_datetime: "2026-08-21T09:00:00+02:00"
+  persona: normal
+  user_visible:
+    desired_time: "2026-08-21T09:00:00+02:00"
+    alternative_time: "2026-08-21T15:00:00+02:00"
+
+expected:
+  database:
+    appointments.apt_5:
+      datetime: "2026-08-21T15:00:00+02:00"
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_updated
+  forbidden_events:
+    - appointment_created
+
+limits:
+  max_turns: 15

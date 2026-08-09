@@ -1,0 +1,44 @@
+# Correction handling (section 24 regression example): the caller first names
+# the wrong time, then corrects to the intended time. The bot must book the
+# CORRECTED time, never the originally-stated one.
+id: move_with_correction_001
+description: >
+  Kunde nennt zuerst einen falschen Zeitpunkt und korrigiert sich dann.
+  Der Bot muss den korrigierten Termin buchen.
+tags: [booking, correction, core]
+
+initial_state:
+  session_customer_id: customer_9
+  customers:
+    - id: customer_9
+      name: Bernd Beispiel
+  appointments:
+    - id: apt_9
+      customer_id: customer_9
+      datetime: "2026-09-01T09:00:00+02:00"
+
+user:
+  goal:
+    type: move_appointment
+    target_datetime: "2026-09-03T16:00:00+02:00"
+  persona: confused
+  user_visible:
+    desired_time: "2026-09-03T16:00:00+02:00"
+    # The caller misspeaks this time first, then corrects to desired_time.
+    correction:
+      mistaken_time: "2026-09-03T11:00:00+02:00"
+
+expected:
+  database:
+    appointments.apt_9:
+      datetime: "2026-09-03T16:00:00+02:00"
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_updated
+  forbidden_events:
+    - appointment_created
+
+limits:
+  max_turns: 15

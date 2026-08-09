@@ -1,0 +1,39 @@
+# Create a brand-new appointment. The auto-generated id for the first new
+# appointment in an empty calendar is apt_new_1 (see backend.tools).
+id: book_appointment_001
+description: >
+  Neukunde vereinbart einen neuen Termin.
+tags: [booking, core]
+
+initial_state:
+  session_customer_id: customer_new
+  customers:
+    - id: customer_new
+      name: Dieter Demo
+
+user:
+  goal:
+    type: book_appointment
+    target_datetime: "2026-10-05T13:30:00+02:00"
+  persona: terse
+  user_visible:
+    desired_time: "2026-10-05T13:30:00+02:00"
+
+expected:
+  database:
+    appointments.apt_new_1:
+      datetime: "2026-10-05T13:30:00+02:00"
+      customer_id: customer_new
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_created
+  forbidden_events:
+    - appointment_updated
+  tool_call_counts:
+    appointment.create: 1
+    appointment.update: 0
+
+limits:
+  max_turns: 15

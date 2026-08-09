@@ -1,0 +1,44 @@
+[project]
+name = "phonebot-qa"
+version = "0.1.0"
+description = "Automated QA and red-team platform for phonebots / voice agents — a CI/CD system for voice agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "phonebot-test-platform" }]
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+]
+llm = [
+    # Real LLM providers plug in behind the Judge / Simulator interfaces.
+    # Kept optional so the platform runs deterministically with no API keys.
+    "anthropic>=0.40",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+phonebot-qa = "phonebot_qa.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["phonebot_qa*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]

@@ -1,0 +1,34 @@
+# CI for the Phonebot Test Platform (concept §28).
+#
+# On every push / PR: install, run the unit suite, then run the platform's own
+# text scenarios + red-team suite as a release gate. The `run` command exits
+# non-zero on any critical failure, so a regression blocks the build.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[api,dev]"
+      - name: Unit tests
+        run: pytest -q
+      - name: Core scenarios + regression gate (fast text tests)
+        run: phonebot-qa run --suite all --junit report.xml
+      - name: Red-team suite
+        run: phonebot-qa redteam
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report
+          path: report.xml

@@ -1,0 +1,8 @@
+id: elderly_customer
+description: Älterer, nicht technikaffiner Anrufer, der etwas mehr Zeit braucht.
+patience: high
+verbosity: long
+tech_savvy: low
+language_proficiency: high
+correction_probability: 0.3
+off_topic_probability: 0.2

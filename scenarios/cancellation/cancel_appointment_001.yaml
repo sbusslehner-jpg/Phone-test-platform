@@ -1,0 +1,39 @@
+# Cancel an existing appointment. The bot must confirm before cancelling.
+id: cancel_appointment_001
+description: >
+  Kunde möchte einen bestehenden Termin absagen.
+tags: [cancellation, core]
+
+initial_state:
+  session_customer_id: customer_7
+  customers:
+    - id: customer_7
+      name: Erika Exempel
+  appointments:
+    - id: apt_7
+      customer_id: customer_7
+      datetime: "2026-08-18T11:00:00+02:00"
+
+user:
+  goal:
+    type: cancel_appointment
+  persona: impatient
+  user_visible:
+    current_appointment: "Dienstag 11:00"
+
+expected:
+  database:
+    appointments.apt_7:
+      status: cancelled
+  required_events:
+    - confirmation_requested
+    - confirmation_received
+    - appointment_cancelled
+  forbidden_events:
+    - appointment_created
+    - appointment_updated
+  tool_call_counts:
+    appointment.cancel: 1
+
+limits:
+  max_turns: 12

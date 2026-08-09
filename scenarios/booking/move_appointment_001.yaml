@@ -1,0 +1,45 @@
+# Flagship scenario from the concept document (section 5).
+# Customer wants to move an existing appointment to a new time.
+id: move_appointment_001
+description: >
+  Kunde möchte einen bestehenden Termin auf einen neuen Zeitpunkt verschieben.
+tags: [booking, core]
+
+initial_state:
+  session_customer_id: customer_123
+  customers:
+    - id: customer_123
+      name: Anna Muster
+  appointments:
+    - id: appointment_42
+      customer_id: customer_123
+      datetime: "2026-08-12T14:00:00+02:00"
+
+user:
+  goal:
+    type: move_appointment
+    target_datetime: "2026-08-14T10:00:00+02:00"
+  persona: normal
+  # Only what a real caller would know (knowledge isolation, section 10).
+  user_visible:
+    current_appointment: "Mittwoch 14:00"
+    desired_time: "2026-08-14T10:00:00+02:00"
+
+expected:
+  database:
+    appointments.appointment_42:
+      datetime: "2026-08-14T10:00:00+02:00"
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_updated
+  forbidden_events:
+    - appointment_created
+  tool_call_counts:
+    appointment.update: 1
+    appointment.create: 0
+
+limits:
+  max_turns: 15
+  max_duration_seconds: 180
