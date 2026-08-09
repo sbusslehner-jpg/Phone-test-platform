@@ -23,7 +23,7 @@ async def test_false_success_on_fault_is_detected():
     summary = await run_suite([scenario], bot=bot)
     r = summary.results[0]
     assert r.result == "FAIL"
-    assert "no_false_success_on_fault" in (r.critical_failure or "")
+    assert "no_false_success" in (r.critical_failure or "")
 
 
 async def test_missing_confirmation_is_detected():

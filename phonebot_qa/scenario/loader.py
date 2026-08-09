@@ -53,14 +53,23 @@ def load_scenarios(root: str | Path) -> list[Scenario]:
     root = Path(root)
     if root.is_file():
         return [load_scenario(root)]
+    # Keys that only a scenario carries — if any are present, the file is a
+    # scenario and a missing ``user`` section is a bug, not a persona file.
+    scenario_markers = {"initial_state", "expected", "limits", "faults", "goal"}
     scenarios: list[Scenario] = []
     seen: dict[str, Path] = {}
     for file in sorted(root.rglob("*.y*ml")):
-        # Persona files live alongside scenarios in some layouts; skip anything
-        # that doesn't look like a scenario (no ``user`` section).
         data = _read_yaml(file)
         if "user" not in data:
-            continue
+            # Tolerate persona files colocated with scenarios, but fail loudly on
+            # a scenario that forgot or mistyped its ``user`` section — silently
+            # dropping it would let an untested scenario "pass" (loader contract).
+            looks_like_persona = "id" in data and not (set(data) & scenario_markers)
+            if looks_like_persona:
+                continue
+            raise ScenarioValidationError(
+                f"{file}: missing required 'user' section (malformed scenario?)"
+            )
         scenario = load_scenario(file)
         if scenario.id in seen:
             raise ScenarioValidationError(

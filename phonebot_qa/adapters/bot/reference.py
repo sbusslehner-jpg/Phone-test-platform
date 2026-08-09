@@ -132,9 +132,18 @@ class ReferenceAppointmentBot(BotAdapter):
             return BotResponse(text=refusal, metadata={"refused": True})
 
         # -- 2. Correction handling (a new target time mid-flow) --------- #
+        # Only time-bearing actions (update/create) can be "corrected" to a new
+        # time. A cancel has no target time, so a datetime uttered during a
+        # cancel confirmation must NOT be treated as a correction (that would
+        # misroute it into a booking).
         found_dt = self._extract_datetime(message)
         pending = state.get("pending")
-        if pending and found_dt and found_dt != state.get("target_datetime"):
+        if (
+            pending
+            and pending[0] in ("update", "create")
+            and found_dt
+            and found_dt != state.get("target_datetime")
+        ):
             return await self._handle_correction(session, found_dt)
 
         # -- 3. Confirmation of a pending action ------------------------- #
@@ -155,9 +164,13 @@ class ReferenceAppointmentBot(BotAdapter):
         if _contains(text, _CREATE_KW):
             return await self._begin_create(session, message, found_dt)
 
-        # A bare datetime with no verb, when we already know the intent.
+        # A bare datetime with no verb, when we already know the intent (e.g. the
+        # caller supplies a time in a follow-up turn, or an alternative after a
+        # busy slot). Handled symmetrically for both move and create.
         if found_dt and state.get("intent") == "move":
             return await self._begin_move(session, message, found_dt)
+        if found_dt and state.get("intent") == "create":
+            return await self._begin_create(session, message, found_dt)
 
         return BotResponse(
             text=(
@@ -231,7 +244,7 @@ class ReferenceAppointmentBot(BotAdapter):
             return self._ask_confirmation(
                 session, f"Ich verschiebe Ihren Termin auf {target_dt}. Ist das korrekt?"
             )
-        else:  # create
+        elif action == "create":
             payload = {
                 "customer_id": self._session_customer(session),
                 "datetime": target_dt,
@@ -240,6 +253,8 @@ class ReferenceAppointmentBot(BotAdapter):
             return self._ask_confirmation(
                 session, f"Ich buche einen neuen Termin am {target_dt}. Ist das korrekt?"
             )
+        # Defensive: _propose_time must only be called for time-bearing actions.
+        raise ValueError(f"_propose_time called with unsupported action {action!r}")
 
     async def _handle_correction(self, session, new_dt: str):
         state = session.state

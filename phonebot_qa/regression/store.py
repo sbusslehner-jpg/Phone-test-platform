@@ -12,9 +12,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-from ..models import CaseResult, Scenario
+from ..models import CaseResult, Persona, Scenario
+
+#: Tag added to replayed regression scenarios so the release gate can count them.
+REGRESSION_TAG = "regression"
+
+
+def _slug(value: Any) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "-" for c in str(value))
 
 
 class RegressionCase(BaseModel):
@@ -25,6 +32,8 @@ class RegressionCase(BaseModel):
     id: str
     scenario: dict[str, Any]  # full serialized Scenario (self-contained)
     persona_id: str | None = None
+    # Full persona snapshot so the case is self-contained w.r.t. persona edits.
+    persona: dict[str, Any] | None = None
     seed: int = 0
     mode: str = "text"
     bot_version: str = "unknown"
@@ -34,7 +43,13 @@ class RegressionCase(BaseModel):
     source_case_id: str | None = None
 
     def to_scenario(self) -> Scenario:
-        return Scenario.model_validate(self.scenario)
+        scenario = Scenario.model_validate(self.scenario)
+        if REGRESSION_TAG not in scenario.tags:
+            scenario.tags = [*scenario.tags, REGRESSION_TAG]
+        return scenario
+
+    def to_persona(self) -> Persona | None:
+        return Persona.model_validate(self.persona) if self.persona else None
 
 
 class RegressionStore:
@@ -53,12 +68,22 @@ class RegressionStore:
         *,
         reason: str | None = None,
         created_at: str | None = None,
+        persona: Persona | None = None,
     ) -> RegressionCase:
-        """Build (but do not save) a regression case from a failed result."""
+        """Build (but do not save) a regression case from a failed result.
+
+        The id encodes scenario, persona, mode, seed AND bot version so distinct
+        captured failures never collide (and silently overwrite) on disk.
+        """
+        persona_slug = _slug(result.persona_id or "default")
         case = RegressionCase(
-            id=f"regr_{scenario.id}_{result.persona_id or 'default'}_{result.seed}",
+            id=(
+                f"regr_{scenario.id}_{persona_slug}_{result.mode}"
+                f"_seed{result.seed}_{_slug(result.bot_version)}"
+            ),
             scenario=scenario.model_dump(mode="json"),
             persona_id=result.persona_id,
+            persona=persona.model_dump(mode="json") if persona else None,
             seed=result.seed,
             mode=result.mode,
             bot_version=result.bot_version,
@@ -84,10 +109,11 @@ class RegressionStore:
         *,
         reason: str | None = None,
         created_at: str | None = None,
+        persona: Persona | None = None,
     ) -> RegressionCase:
         """Build and immediately persist a regression case."""
         case = self.add_from_result(
-            result, scenario, reason=reason, created_at=created_at
+            result, scenario, reason=reason, created_at=created_at, persona=persona
         )
         self.save(case)
         return case

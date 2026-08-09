@@ -102,9 +102,16 @@ class EvaluationPipeline:
             result = "PASS"
             critical_failure = None
 
+        # Critical failures override the score (concept §27): a failed run must
+        # not report a high total that would mislead ranking / avg_score. The
+        # component breakdown is kept for diagnostics; only the headline zeroes.
+        if result != "PASS":
+            score.total = 0.0
+
         return CaseResult(
             case_id=case_id,
             scenario_id=scenario.id,
+            scenario_tags=list(scenario.tags),
             persona_id=persona_id,
             bot_version=bot_version,
             mode=mode,

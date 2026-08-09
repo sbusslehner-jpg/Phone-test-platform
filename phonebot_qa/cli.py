@@ -24,10 +24,11 @@ from pathlib import Path
 from .adapters.bot.reference import BotBehavior, ReferenceAppointmentBot
 from .orchestrator.engine import RunEngine, RunSummary, summarize
 from .orchestrator.gate import release_gate
-from .orchestrator.generator import generate_cases
+from .orchestrator.generator import TestCase, generate_cases
 from .redteam.attacks import redteam_scenarios
 from .regression.store import RegressionStore
 from .scenario.loader import load_personas, load_scenarios
+from .simulator.personas import resolve_persona
 
 # Named bot versions -> behaviour. Lets the gate/replay demos model real bug
 # fixes and regressions (sections 24 & 29) with the in-process reference bot.
@@ -50,7 +51,9 @@ def _load_suite(suite: str, scenarios_dir: str):
         scenarios = load_scenarios(root)
     else:
         sub = root / suite
-        scenarios = load_scenarios(sub) if sub.exists() else load_scenarios(root)
+        # Unknown suite (no matching subdirectory) returns empty so the caller
+        # errors loudly, rather than silently broadening to the whole suite.
+        scenarios = load_scenarios(sub) if sub.exists() else []
     if suite in ("all", "staging"):
         scenarios = scenarios + redteam_scenarios()
     return scenarios
@@ -145,13 +148,16 @@ def _maybe_capture_regressions(summary: RunSummary, args, scenarios) -> None:
     if not getattr(args, "capture_regressions", None):
         return
     by_id = {s.id: s for s in scenarios}
+    personas = _load_personas(args.personas_dir)
     store = RegressionStore(args.capture_regressions)
     n = 0
     for r in summary.failures():
         scenario = by_id.get(r.scenario_id)
         if scenario is None:
             continue
-        store.capture(r, scenario, created_at=args.now)
+        # Freeze the exact persona too, so the case is fully self-contained.
+        persona = resolve_persona(r.persona_id, personas)
+        store.capture(r, scenario, created_at=args.now, persona=persona)
         n += 1
     if n:
         print(f"\nCaptured {n} regression case(s) into {args.capture_regressions}")
@@ -222,12 +228,36 @@ def cmd_gate(args) -> int:
 
 def cmd_replay(args) -> int:
     store = RegressionStore(args.store)
-    scenarios = store.scenarios()
-    if not scenarios:
+    cases_meta = store.load_all()
+    if not cases_meta:
         print(f"No regression cases in {args.store}", file=sys.stderr)
         return 2
     bot = build_bot(args.bot_version)
-    summary = asyncio.run(_run_summary(args, scenarios, bot))
+    personas = dict(_load_personas(args.personas_dir))
+    # Replay each case with its EXACT captured seed, persona and mode — not the
+    # CLI defaults — so seed/persona-specific failures actually reproduce.
+    test_cases: list[TestCase] = []
+    for c in cases_meta:
+        scenario = c.to_scenario()
+        persona = c.to_persona()
+        if persona is not None:
+            personas[persona.id] = persona  # frozen snapshot wins
+            persona_id = persona.id
+        else:
+            persona_id = c.persona_id
+        test_cases.append(
+            TestCase(
+                case_id=c.id,
+                scenario=scenario,
+                persona_id=persona_id,
+                seed=c.seed,
+                mode=c.mode,
+                bot_version=bot.version,
+            )
+        )
+    engine = RunEngine(bot, personas=personas, concurrency=args.concurrency)
+    results = asyncio.run(engine.run_cases(test_cases))
+    summary = summarize(results, bot.version)
     _print_summary(summary)
     return 0 if summary.critical_failures == 0 and summary.errored == 0 else 1
 

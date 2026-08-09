@@ -322,6 +322,7 @@ class CaseResult(BaseModel):
 
     case_id: str
     scenario_id: str
+    scenario_tags: list[str] = Field(default_factory=list)
     persona_id: str | None = None
     bot_version: str = "unknown"
     mode: Literal["text", "voice"] = "text"

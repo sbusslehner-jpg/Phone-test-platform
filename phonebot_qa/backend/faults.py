@@ -99,15 +99,20 @@ class FaultInjector:
         if isinstance(latency, (int, float)) and latency > 0:
             result.extra_latency_ms = int(latency)
 
-        # Probabilistic vs deterministic failure.
+        # Probabilistic vs deterministic failure. ``status``/``kind`` only
+        # *describe* the fault to inject; they must not force it. When a
+        # ``failure_probability`` is present it is authoritative (gated by the
+        # seeded RNG); otherwise an explicit ``fail``/``status``/``kind`` means
+        # a deterministic fault.
         prob = active.get("failure_probability")
         forced = bool(active.get("fail"))
         status = active.get("status")
         kind = active.get("kind")
 
-        will_fail = forced or status is not None or kind is not None
         if isinstance(prob, (int, float)) and prob > 0:
-            will_fail = will_fail or (self._rng.random() < float(prob))
+            will_fail = forced or (self._rng.random() < float(prob))
+        else:
+            will_fail = forced or status is not None or kind is not None
 
         if will_fail:
             result.fail = True

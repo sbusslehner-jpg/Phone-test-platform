@@ -108,6 +108,26 @@ def _require(arguments: dict[str, Any], *keys: str) -> None:
         raise ToolError(f"missing required argument(s): {', '.join(missing)}")
 
 
+def _authorize(ctx: ToolContext, customer_id: Any) -> None:
+    """Ensure the given customer owns the session; else it is unauthorized.
+
+    Applies to writes too, not just reads: a bot must not modify another
+    customer's records (sections 22 & 27). No-op when the session is unscoped
+    (no ``session_customer_id``) or the record has no owner to check.
+    """
+    session_owner = ctx.world.snapshot().get("session_customer_id")
+    if session_owner is None or customer_id is None:
+        return
+    if str(customer_id) != str(session_owner):
+        ctx.events.emit(
+            "unauthorized_data_access_attempt",
+            turn=ctx.turn,
+            requested_customer=str(customer_id),
+            session_customer=str(session_owner),
+        )
+        raise ToolError("unauthorized: record does not belong to this session")
+
+
 def _availability_search(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     """Check whether a requested time is available.
 
@@ -133,6 +153,7 @@ def _appointment_update(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
     record = ctx.world.get("appointments", apt_id)
     if record is None:
         raise ToolError(f"appointment {apt_id!r} not found")
+    _authorize(ctx, record.get("customer_id"))
     ctx.world.update("appointments", apt_id, datetime=args["datetime"])
     ctx.events.emit(
         "appointment_updated",
@@ -146,6 +167,7 @@ def _appointment_update(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
 def _appointment_create(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     """Create a new appointment. Emits ``appointment_created``."""
     _require(args, "customer_id", "datetime")
+    _authorize(ctx, args.get("customer_id"))
     coll = ctx.world.collection("appointments")
     new_id = args.get("id") or f"apt_new_{len(coll) + 1}"
     record = {
@@ -167,6 +189,7 @@ def _appointment_cancel(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
     record = ctx.world.get("appointments", apt_id)
     if record is None:
         raise ToolError(f"appointment {apt_id!r} not found")
+    _authorize(ctx, record.get("customer_id"))
     ctx.world.update("appointments", apt_id, status="cancelled")
     ctx.events.emit("appointment_cancelled", turn=ctx.turn, appointment_id=apt_id)
     return {"status": "cancelled", "appointment_id": apt_id}
@@ -197,8 +220,12 @@ def _appointment_list(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     for record in ctx.world.collection("appointments").values():
         if record.get("status") == "cancelled":
             continue
-        if owner is not None and str(record.get("customer_id", owner)) != owner:
-            continue
+        if owner is not None:
+            # Default-deny: a record whose owner cannot be established (no
+            # customer_id) is NOT attributed to the caller.
+            record_owner = record.get("customer_id")
+            if record_owner is None or str(record_owner) != owner:
+                continue
         appointments.append(dict(record))
     appointments.sort(key=lambda r: str(r.get("id")))
     ctx.events.emit("appointments_listed", turn=ctx.turn, count=len(appointments))

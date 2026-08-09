@@ -70,10 +70,17 @@ class GateResult:
 
 
 def _count_regression_failures(summary: RunSummary) -> int:
+    """Failing cases that are regression cases.
+
+    A regression case is identified by the ``regression`` scenario tag (added by
+    the regression store on replay) or, for belt-and-braces, a ``regr_``
+    scenario-id prefix.
+    """
     return sum(
         1
         for r in summary.results
-        if r.result != "PASS" and r.scenario_id.startswith("regr_")
+        if r.result != "PASS"
+        and ("regression" in r.scenario_tags or r.scenario_id.startswith("regr_"))
     )
 
 
