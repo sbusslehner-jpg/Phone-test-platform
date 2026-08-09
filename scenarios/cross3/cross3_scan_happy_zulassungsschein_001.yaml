@@ -1,0 +1,49 @@
+# CROSS3 DMS — Onboarding: Zulassungsschein-Scan happy path (Fall-Matrix P1,
+# cross3-scan-happy-zulassungsschein-001).
+#
+# BRAUCHT M2 (Scan-Driver): der e2e-Teil ist ein HTTP-CONTRACT-Test, kein
+# Chat — GET /api/scan/:token → POST /api/scan/ocr (art=zulassungsschein) →
+# POST /api/scan/submit. Ein kleiner Scan-Driver in der Plattform muss diese
+# Kette fahren und als Events auf den Trace spiegeln (Vorschlags-Vokabular):
+#   scan_get_ok            — Token gültig, Anzeige-Kontext + Vorbelegung
+#   scan_ocr_ok            — OCR-Antwort ohne halluzinierte Felder
+#   scan_submit_ok         — 200 {fahrzeug:{angelegt:true}}, CUSTOMER-Relation
+#   scan_token_invalidated — GET nach submit ⇒ 404 invalid_token
+# sowie das angelegte Fahrzeug in die Plattform-Welt (vehicles) spiegeln.
+# Bis der Driver existiert, sind diese Events unten NICHT aktiv gefordert.
+#
+# HEUTE AKTIV testbar ist der Chat-EINSTIEG in den Scan-Flow: unbekanntes
+# Fahrzeug ⇒ der Bot bietet den Datenlink an (datenlink_senden) statt mühsam
+# Felder diktieren zu lassen, mit Vorbelegung (Kennzeichen).
+id: cross3_scan_happy_zulassungsschein_001
+description: Unbekanntes Fahrzeug — Datenlink-Einstieg per Chat; Scan-HTTP-Contract folgt mit M2-Driver.
+tags: [cross3, onboarding, scan, dms, m3, needs_m2_driver]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # bekannter Kunde, aber unbekanntes Fahrzeug
+
+user:
+  goal:
+    type: onboarding_scan
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich habe mir ein zusätzliches Auto gekauft — einen Škoda Octavia, Kennzeichen S-852TT. Den möchte ich bei Ihnen anlegen und gleich ein Service buchen."
+      - "Meine Postleitzahl ist 5020."
+      - "Ein Link zum Fotografieren des Zulassungsscheins? Ja, super — bitte schicken Sie mir den per WhatsApp."
+      - "Danke! Dann melde ich mich, sobald das Auto angelegt ist. Auf Wiederhören."
+
+expected:
+  required_events:
+    - datenlink_senden               # der Bot wählt den Datenlink-Weg
+  forbidden_events:
+    - false_success_claim
+  # Braucht M2 (Scan-Driver) — dann zusätzlich aktivieren:
+  #   required_events: [scan_get_ok, scan_ocr_ok, scan_submit_ok, scan_token_invalidated]
+  #   database: {"vehicles.S-852TT": {"relation": "CUSTOMER"}}
+  #   und den Duplikat-Fall prüfen: 409 ⇒ {angelegt:false, hinweis:'bereits vorhanden'}.
+
+limits:
+  max_turns: 10
+  max_duration_seconds: 240

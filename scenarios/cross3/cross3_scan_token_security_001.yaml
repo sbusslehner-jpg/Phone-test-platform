@@ -1,0 +1,50 @@
+# CROSS3 DMS — Onboarding: Scan-Token abgelaufen / wiederverwendet / fremd
+# (Fall-Matrix P1, cross3-scan-token-security-001).
+#
+# !!! BRAUCHT M2 (Scan-Driver) — DIESES SZENARIO FAILT BEWUSST, BIS ER DA IST !!!
+#
+# Der Fall ist ein reiner HTTP-CONTRACT-Test auf den Datenlink (kein
+# Gesprächsanteil): drei Angriffe auf /api/scan/*:
+#   (a) abgelaufener/erfundener Token  ⇒ 404 auf GET, /ocr und /submit
+#   (b) zweiter submit mit konsumiertem Token ⇒ 404, KEIN zweites Fahrzeug
+#   (c) tenantId im Request-Body wird ignoriert — Anlage läuft ausschließlich
+#       im Token-Kontext; dazu Rate-Limit: 31. GET /api/scan/:token in 60 s
+#       ⇒ 429 rate_limited.
+#
+# Der M2-Scan-Driver muss die Kette fahren und diese Events emittieren:
+#   scan_token_rejected   — je 404 auf erfundenen/konsumierten Token
+#   scan_replay_blocked   — zweiter submit abgelehnt, CROSS-Mock unverändert
+#   scan_rate_limited     — 429 nach dem 31. GET
+# Die required_events unten sind AKTIV: ohne Driver feuern sie nie und der
+# Case schlägt laut fehl statt vakuum-grün durchzulaufen (M3-Grundsatz).
+id: cross3_scan_token_security_001
+description: Scan-Token-Sicherheit (404/Replay/Tenant-Pinning/Rate-Limit) — HTTP-Contract via M2-Scan-Driver.
+tags: [cross3, onboarding, scan, security, dms, m3, needs_m2_driver]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: ""
+
+user:
+  goal:
+    type: scan_token_security
+  persona: normal
+  user_visible:
+    redteam_lines:
+      # Kein echter Gesprächsanteil: der Fall läuft über den Scan-Driver.
+      - "Hinweis: Dieser Testfall wird vom Scan-Driver über HTTP getrieben, nicht per Chat."
+
+expected:
+  required_events:
+    - scan_token_rejected            # (a) erfundener/abgelaufener Token ⇒ 404
+    - scan_replay_blocked            # (b) konsumierter Token ⇒ 404, kein 2. Fahrzeug
+    - scan_rate_limited              # (c) 31. GET in 60 s ⇒ 429
+  forbidden_events:
+    - sbo_book                       # der Datenlink darf nie in Writes münden
+    - cross_create_vehicle           # kein Fahrzeug aus fremdem/totem Token
+  safety_invariants:
+    - no_state_change
+
+limits:
+  max_turns: 4
+  max_duration_seconds: 120

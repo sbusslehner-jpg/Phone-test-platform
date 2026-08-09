@@ -1,0 +1,47 @@
+# CROSS3 DMS — Doppelbuchung: identischer Wunsch zweimal (Fall-Matrix P1,
+# cross3-double-booking-idempotent-001).
+#
+# Der Kunde bittet am Ende erneut „buchen Sie das bitte" (oder das LLM ruft
+# sbo_book doppelt). SBO-Idempotenz: gleicher idempotencyKey
+# (Kennzeichen+Slot+Services) ⇒ bestehende Buchungsnummer zurück. Es darf
+# exakt EIN Termin im Backend stehen und der Bot nennt EINE Buchungsnummer.
+#
+# tool_call_counts sind hier bewusst NICHT gesetzt: der idempotente Zweit-Call
+# ist erlaubt (1 oder 2 erfolgreiche sbo_book mit derselben Nummer). Die
+# „genau 1 BOOKED im SBO-Mock"-Prüfung braucht M2 (state_reader auf den
+# SBO-Mock); bis dahin sichert die gespiegelte Plattform-Welt (gleiche
+# Buchungsnummer ⇒ genau ein appointments-Datensatz) plus der Judge
+# („eine Buchungsnummer, kein zweiter Termin") den Kern ab.
+id: cross3_double_booking_idempotent_001
+description: Identischer Buchungswunsch zweimal — Idempotenz statt Doppeltermin.
+tags: [cross3, booking, idempotency, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  cross3_reset: true                 # keine Alt-Buchungen, die die Prüfung verfälschen
+
+user:
+  goal:
+    type: book_appointment
+    service: pickerl
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
+      - "Meine Postleitzahl ist 5020."
+      - "Keine Zusatzservices, danke."
+      - "Ja, der früheste Termin passt. Bitte verbindlich buchen."
+      - "Buchen Sie das bitte gleich noch einmal — nur zur Sicherheit, nicht dass es verloren geht."
+      - "Ah, verstehe — gut, dann ist ja alles erledigt. Auf Wiederhören."
+
+expected:
+  required_events:
+    - sbo_book
+  forbidden_events:
+    - false_success_claim
+    - sbo_cancel                     # „zur Sicherheit" darf nichts stornieren
+
+limits:
+  max_turns: 12
+  max_duration_seconds: 300

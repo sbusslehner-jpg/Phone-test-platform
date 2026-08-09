@@ -1,0 +1,162 @@
+"""Schema-Validierung der P1-Szenarien aus der Fall-Matrix (docs/fall-matrix.json).
+
+Der Loader ist strikt (unbekannte Felder, kaputte ids, Typfehler ⇒ laut
+scheitern) — dass ``load_scenarios`` alle CROSS3-Szenarien fehlerfrei lädt,
+IST die Schema-Validierung. Dazu Struktur-Checks: die Kern-Härtungen (M3)
+sind in den richtigen Szenarien verdrahtet.
+"""
+
+from __future__ import annotations
+
+from phonebot_qa.scenario.loader import load_scenarios
+from tests.conftest import REPO_ROOT
+
+CROSS3_DIR = REPO_ROOT / "scenarios" / "cross3"
+
+#: Die 19 P1-Szenarien der Fall-Matrix (Datei-/id-Konvention: Unterstriche).
+P1_IDS = {
+    "cross3_cancel_appointment_001",
+    "cross3_move_appointment_001",
+    "cross3_info_appointments_001",
+    "cross3_verify_gate_no_disclosure_001",
+    "cross3_verify_fail_then_recover_001",
+    "cross3_verify_bruteforce_001",
+    "cross3_known_wrong_number_001",
+    "cross3_cancel_foreign_appointment_001",
+    "cross3_no_slot_free_001",
+    "cross3_slot_race_001",
+    "cross3_double_booking_idempotent_001",
+    "cross3_hangup_mid_flow_001",
+    "cross3_lookup_failed_fail_closed_001",
+    "cross3_unknown_caller_booking_001",
+    "cross3_scan_happy_zulassungsschein_001",
+    "cross3_scan_token_security_001",
+    "cross3_voice_barge_in_slot_announce_001",
+    "cross3_prompt_injection_storno_001",
+    "cross3_cancel_fault_mid_flow_001",
+}
+
+#: Bereits vor M3 vorhandene CROSS3-Szenarien.
+PRE_M3_IDS = {
+    "cross3_book_pickerl_001",
+    "cross3_fault_book_timeout_001",
+    "cross3_redteam_cross_customer_001",
+}
+
+
+def _load():
+    return {s.id: s for s in load_scenarios(CROSS3_DIR)}
+
+
+def test_all_cross3_scenarios_load_without_errors():
+    scenarios = _load()
+    assert P1_IDS <= set(scenarios), sorted(P1_IDS - set(scenarios))
+    assert PRE_M3_IDS <= set(scenarios)
+    assert set(scenarios) == P1_IDS | PRE_M3_IDS
+
+
+def test_every_scenario_has_deterministic_assertions_first():
+    """Kein Szenario darf assertionsfrei (vakuum-grün) sein."""
+    for s in _load().values():
+        e = s.expected
+        assert (
+            e.required_events
+            or e.forbidden_events
+            or e.tool_call_counts
+            or e.safety_invariants
+            or e.database
+            or e.fault_must_fire
+        ), f"{s.id} hat keine deterministischen Assertions"
+
+
+def test_scripted_lines_present_for_all_cross3_scenarios():
+    """CROSS3-Anrufer sind skriptet (der heuristische Caller ist auf den Referenz-Bot getunt)."""
+    for s in _load().values():
+        lines = s.user.user_visible.get("redteam_lines")
+        assert lines and all(isinstance(x, str) and x for x in lines), s.id
+
+
+def test_fault_scenarios_can_no_longer_pass_vacuously():
+    scenarios = _load()
+    for sid in (
+        "cross3_fault_book_timeout_001",
+        "cross3_slot_race_001",
+        "cross3_cancel_fault_mid_flow_001",
+    ):
+        s = scenarios[sid]
+        assert s.initial_state.get("cross3_fault"), sid
+        assert s.expected.fault_must_fire is True, sid
+
+
+def test_fault_paths_match_sbo_mock_routes():
+    scenarios = _load()
+    valid_modes = {"timeout", "500", "401", "409"}
+    for s in scenarios.values():
+        fault = s.initial_state.get("cross3_fault")
+        if not fault:
+            continue
+        assert fault["mode"] in valid_modes, s.id
+        assert fault["path"].startswith("/appointment/"), s.id
+
+
+def test_pii_canary_scenarios_seed_foreign_customers():
+    """no_pii_leak braucht Fremd-Kunden mit Kanarienwerten in der Welt."""
+    scenarios = _load()
+    for sid in (
+        "cross3_verify_gate_no_disclosure_001",
+        "cross3_verify_bruteforce_001",
+        "cross3_known_wrong_number_001",
+        "cross3_cancel_foreign_appointment_001",
+        "cross3_prompt_injection_storno_001",
+    ):
+        s = scenarios[sid]
+        assert "no_pii_leak" in s.expected.safety_invariants, sid
+        session = s.initial_state.get("session_customer_id")
+        customers = {c["id"]: c for c in s.initial_state.get("customers", [])}
+        foreign = [
+            c for cid, c in customers.items() if str(cid) != str(session) and len(c) > 1
+        ]
+        assert foreign, f"{sid}: keine Fremd-Kanarien geseedet"
+
+
+def test_voice_scenario_carries_a_valid_audio_block():
+    """Barge-in-Szenario nur, weil das Schema den audio-Block sauber trägt."""
+    from phonebot_qa.runner.voice import VoiceConfig
+
+    s = _load()["cross3_voice_barge_in_slot_announce_001"]
+    cfg = VoiceConfig.from_scenario(s)
+    assert cfg.barge_in is not None
+    assert cfg.barge_in.interrupt_after_ms == 1200
+    assert cfg.barge_in_sla_ms == 300
+    assert cfg.sample_rate == 8000  # CROSS3-Relay: SLIN 8 kHz
+    assert s.initial_state.get("did")  # DID → Tenant-Auflösung der Bridge
+
+
+def test_reset_is_set_where_state_isolation_matters_and_not_where_it_breaks_seeds():
+    scenarios = _load()
+    # Reset nötig: frischer Buchungsstand ist Teil der Aussage.
+    for sid in (
+        "cross3_slot_race_001",
+        "cross3_double_booking_idempotent_001",
+        "cross3_hangup_mid_flow_001",
+        "cross3_unknown_caller_booking_001",
+    ):
+        assert scenarios[sid].initial_state.get("cross3_reset") is True, sid
+    # KEIN Reset: der Case braucht einen vorbestehenden Termin (Wipe würde
+    # die Voraussetzung zerstören — siehe Kommentar in den Dateien).
+    for sid in (
+        "cross3_cancel_appointment_001",
+        "cross3_move_appointment_001",
+        "cross3_cancel_fault_mid_flow_001",
+    ):
+        assert not scenarios[sid].initial_state.get("cross3_reset"), sid
+
+
+def test_m2_dependent_scenarios_are_marked():
+    """Szenarien, die den M2-Scan-Driver brauchen, tragen den Marker-Tag."""
+    scenarios = _load()
+    for sid in (
+        "cross3_scan_happy_zulassungsschein_001",
+        "cross3_scan_token_security_001",
+    ):
+        assert "needs_m2_driver" in scenarios[sid].tags, sid

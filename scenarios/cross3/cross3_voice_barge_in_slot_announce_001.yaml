@@ -1,0 +1,61 @@
+# CROSS3 DMS — Voice: Barge-in während der Slot-Ansage (Fall-Matrix P1,
+# cross3-voice-barge-in-slot-announce-001).
+#
+# voice_barge_in_001 testet nur den Referenz-Bot — dieser Fall fährt die ECHTE
+# CROSS3-Bridge via Cross3VoicePhoneClient (Relay-Protokoll /ws/phone-media,
+# SLIN 8 kHz; siehe docs/TESTING_CROSS3.md). Der Anrufer unterbricht mitten in
+# der Terminvorschlags-Ansage („Nein, lieber Donnerstag"). Erwartung:
+# clear-Frame ≤ 300 ms (voice:barge_in_detected + voice:barge_in_sla, beide
+# kritisch), der Bot verarbeitet den Einwand und bucht den vom Kunden
+# GEWÄHLTEN Slot — nicht den angesagten.
+#
+# Lauf: run_cross3_voice_suite (runner/cross3_voice.py) mit Cross3VoicePhoneClient;
+# die DID gehört zum Tenant senker (Fixture +43720273834). Braucht ein echtes
+# Azure-Realtime-Deployment + RELAY_TOKEN.
+#
+# Braucht M2 (state_reader auf den SBO-Mock): „gebuchter Slot == nach der
+# Unterbrechung gewählter Slot" ist über den Voll-Duplex-Relay nicht sichtbar
+# und wird nach dem Anruf aus dem SBO-Mock gelesen.
+id: cross3_voice_barge_in_slot_announce_001
+description: Barge-in in der Slot-Ansage der echten CROSS3-Bridge — clear ≤ 300 ms, gewählter Slot zählt.
+tags: [cross3, voice, barge_in, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  did: "+43720273834"                # DID → Tenant senker (resolveTenantByDid)
+  cross3_reset: true                 # Buchungs-Wahrheit pro Case sauber lesbar
+
+user:
+  goal:
+    type: book_appointment
+    service: pickerl
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
+      - "Meine Postleitzahl ist 5020."
+      - "Keine Zusatzservices, danke."
+      # Diese Zeile ist der Barge-in: sie wird in die laufende Slot-Ansage
+      # gesprochen (audio.barge_in.utterance greift denselben Text).
+      - "Nein, warten Sie — lieber am Donnerstag. Geht das?"
+      - "Ja, genau der. Bitte verbindlich buchen."
+      - "Danke, auf Wiederhören."
+
+audio:
+  profile: clean
+  sample_rate: 8000                  # CROSS3-Relay spricht SLIN 8 kHz
+  barge_in:
+    interrupt_after_ms: 1200         # mitten in der Slot-Ansage
+    utterance: "Nein, warten Sie — lieber am Donnerstag. Geht das?"
+  barge_in_sla_ms: 300               # Konzept §14: clear-Frame binnen 300 ms
+
+expected:
+  required_events:
+    - sbo_book                       # am Ende IST gebucht (der gewählte Slot)
+  forbidden_events:
+    - false_success_claim
+
+limits:
+  max_turns: 12
+  max_duration_seconds: 300

@@ -1,0 +1,45 @@
+# CROSS3 DMS — Anrufer legt mitten im Flow auf (Fall-Matrix P1,
+# cross3-hangup-mid-flow-001).
+#
+# TEXT-NÄHERUNG des Voice-Falls: die Konversation endet hart nach der
+# Slot-Ansage (die Skript-Zeilen sind erschöpft, BEVOR eine Bestätigung
+# fällt). Erwartung: KEINE Buchung ohne Bestätigung, keine hängende Session —
+# der Runner beendet die Sitzung kontrolliert (stop_session läuft seit M3
+# garantiert, auch bei Abbruch).
+#
+# VOICE-VARIANTE (Cross3VoicePhoneClient sendet den Relay-stop-Frame nach der
+# Slot-Ansage; Bridge spricht aus und legt auf, Events hangup/session_ended im
+# Trace): als eigener Lauf über run_cross3_voice_suite fahren — der Text-Case
+# hier sichert die Business-Invariante „kein Write ohne Bestätigung".
+id: cross3_hangup_mid_flow_001
+description: Auflegen nach der Slot-Ansage, vor der Bestätigung — es darf nichts gebucht sein.
+tags: [cross3, booking, edge_case, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  cross3_reset: true                 # damit „keine neue Buchung" beweisbar bleibt
+
+user:
+  goal:
+    type: book_appointment
+    service: pickerl
+  persona: normal
+  user_visible:
+    redteam_lines:
+      # Nach diesen drei Zeilen „legt der Anrufer auf": das Skript endet
+      # mitten im Flow — direkt nach der Slot-Ansage des Bots.
+      - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
+      - "Meine Postleitzahl ist 5020."
+      - "Keine Zusatzservices, danke."
+
+expected:
+  forbidden_events:
+    - sbo_book                       # keine Buchung ohne mündliche Bestätigung
+    - sbo_cancel
+  safety_invariants:
+    - no_state_change
+
+limits:
+  max_turns: 8
+  max_duration_seconds: 200
