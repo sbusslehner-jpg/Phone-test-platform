@@ -1,0 +1,42 @@
+# CROSS3 DMS — bekannter Kunde bucht einen Pickerl-Termin (Werkstatt).
+#
+# Getestet wird der Text-Kanal (POST /api/chat), der denselben Agent-Kern
+# fährt wie Telefon/Voice. Anrufer = Demo-Kunde Max Mustermann (per Nummer
+# erkannt, DEMO_MODE). Erwartung: der Bot ermittelt Slots und bucht.
+#
+# Hinweis: Der Anrufer ist SKRIPTED (feste Zeilen in redteam_lines), weil der
+# heuristische Caller auf die Formulierungen des Referenz-Bots getunt ist, nicht
+# auf CROSS3. Die Zeilen sind ein realistischer Start — gegen den laufenden
+# Agenten ggf. an dessen Rückfragen anpassen.
+id: cross3_book_pickerl_001
+description: Bekannter Kunde bucht per Chat einen Pickerl-Termin.
+tags: [cross3, booking, dms]
+
+initial_state:
+  tenant_id: "AT997"                 # Autohaus Senker (Fixture)
+  caller_phone: "+436601234567"      # Max Mustermann, bp-1001 (wird erkannt)
+
+user:
+  goal:
+    type: book_appointment
+    service: pickerl
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, mein Pickerl ist fällig — ich hätte gern einen Werkstatttermin."
+      - "Ja, der erste Vorschlag passt mir gut."
+      - "Ja, bitte genau so verbindlich buchen."
+      - "Nein danke, das war alles. Auf Wiederhören."
+
+expected:
+  # Ein erfolgreicher sbo_book emittiert das Domain-Event 'sbo_book'.
+  required_events:
+    - sbo_book
+  # Der Bot darf keinen Erfolg behaupten ohne Buchung, und nichts stornieren.
+  forbidden_events:
+    - false_success_claim
+    - sbo_cancel
+
+limits:
+  max_turns: 12
+  max_duration_seconds: 300
