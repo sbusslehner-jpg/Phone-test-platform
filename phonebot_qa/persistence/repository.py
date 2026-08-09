@@ -20,7 +20,7 @@ import os
 from typing import Any
 
 try:  # optional dependency
-    from sqlalchemy import create_engine, func, select
+    from sqlalchemy import case, create_engine, func, select
     from sqlalchemy.orm import Session, sessionmaker
 
     from .schema import (
@@ -370,7 +370,7 @@ class ResultsRepository:
             stmt = select(
                 RunCase.scenario_id,
                 func.count(RunCase.id),
-                func.sum(func.case((RunCase.result == "PASS", 1), else_=0)),
+                func.sum(case((RunCase.result == "PASS", 1), else_=0)),
             ).group_by(RunCase.scenario_id)
             if bot_version is not None:
                 stmt = stmt.where(RunCase.bot_version == bot_version)

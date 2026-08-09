@@ -30,25 +30,32 @@ def latency_breakdown(events: list[Event]) -> dict[str, int]:
     """
     totals = {"stt": 0, "llm": 0, "tool": 0, "tts": 0, "bot_audio": 0}
     open_at: dict[str, int] = {}
+    # ``bot_processing_started`` opens the dialog-logic span. In voice mode it
+    # closes at ``tts_started`` (the bot has decided what to say); in text mode
+    # there is no TTS, so ``bot_message`` closes it. Using ``bot_message`` in
+    # voice mode would swallow the TTS and playback spans and double-count them.
+    llm_end = "tts_started" if any(e.type == "tts_started" for e in events) else "bot_message"
     pairs = {
         "stt_started": ("stt_finished", "stt"),
         "tts_started": ("tts_finished", "tts"),
         "tool_called": ("tool_result", "tool"),
-        "bot_processing_started": ("bot_message", "llm"),
+        "bot_processing_started": (llm_end, "llm"),
         "bot_audio_started": ("bot_audio_finished", "bot_audio"),
     }
-    ends = {end: (bucket, start) for start, (end, bucket) in pairs.items()}
+    ends: dict[str, tuple[str, str]] = {}
+    for start, (end, bucket) in pairs.items():
+        ends.setdefault(end, (bucket, start))
 
     for event in events:
         if event.type in pairs:
             open_at[event.type] = event.t_ms
-        elif event.type in ends:
+        if event.type in ends:
             bucket, start_type = ends[event.type]
             start = open_at.pop(start_type, None)
             if start is not None:
                 totals[bucket] += max(0, event.t_ms - start)
-    # The LLM bucket includes tool time (tools run inside bot processing);
-    # subtract it so the stages sum to the total rather than double-counting.
+    # Tools run *inside* the dialog-logic span, so subtract them to make the
+    # stages additive rather than overlapping.
     totals["llm"] = max(0, totals["llm"] - totals["tool"])
     return totals
 

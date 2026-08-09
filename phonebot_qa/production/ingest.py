@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from ..models import Scenario
 from ..regression.store import RegressionCase
@@ -30,10 +30,13 @@ _SAFE_ID = re.compile(r"[^a-zA-Z0-9_.\-]+")
 
 
 class ProductionTurn(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # ``forbid`` on purpose: a trace exported with different key names (e.g.
+    # {"caller": ...}) would otherwise be ingested as an empty conversation,
+    # producing a regression case that replays nothing and always PASSes.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    user: str = ""
-    bot: str = ""
+    user: str = Field(default="", validation_alias=AliasChoices("user", "caller", "customer"))
+    bot: str = Field(default="", validation_alias=AliasChoices("bot", "agent", "assistant"))
 
 
 class ProductionTrace(BaseModel):
@@ -60,6 +63,15 @@ class ProductionTrace(BaseModel):
     mode: str = "text"
     bot_version: str = "production"
     recorded_at: str | None = None
+
+    @model_validator(mode="after")
+    def _require_caller_utterances(self) -> "ProductionTrace":
+        if self.turns and not any(t.user for t in self.turns):
+            raise ValueError(
+                f"production trace {self.call_id!r} has turns but no caller "
+                "utterances — check the turn key names (expected 'user')"
+            )
+        return self
 
     @classmethod
     def from_file(cls, path: str | Path) -> "ProductionTrace":
@@ -116,8 +128,13 @@ def regression_case_from_trace(
     """Freeze a production failure directly as a regression case (section 24)."""
     scenario = scenario_from_trace(trace)
     return RegressionCase(
-        id=f"regr_{scenario.id}_{trace.persona_id or 'default'}_{trace.mode}"
-        f"_seed{seed}_{trace.bot_version}",
+        # Sanitise every component: a bot version like "prod/2.7" would
+        # otherwise create a path separator and write the case to the wrong
+        # place (or fail outright).
+        id=_SAFE_ID.sub("-", (
+            f"regr_{scenario.id}_{trace.persona_id or 'default'}_{trace.mode}"
+            f"_seed{seed}_{trace.bot_version}"
+        )),
         scenario=scenario.model_dump(mode="json"),
         persona_id=trace.persona_id,
         seed=seed,

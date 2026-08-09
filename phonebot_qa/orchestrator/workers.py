@@ -143,22 +143,50 @@ class DramatiqQueue(_BrokerQueue):
         return handle.get_result(block=True, timeout=int(self.timeout * 1000))
 
 
-def run_case_payload(payload: dict[str, Any], *, bot_factory=None) -> dict[str, Any]:
+def run_case_payload(
+    payload: dict[str, Any],
+    *,
+    bot_factory=None,
+    personas: dict | None = None,
+    personas_dir: str | None = None,
+    voice_overrides: dict | None = None,
+    engine_factory=None,
+) -> dict[str, Any]:
     """Worker-side entry point: run one serialized case, return a serialized result.
 
-    Register this from your Celery/Dramatiq app::
+    A worker is a *different process*, so it cannot inherit the orchestrator's
+    engine configuration. Anything that affects the result must be passed in or
+    resolvable here — most importantly the persona map: a case referencing a
+    YAML-authored persona would otherwise raise ``KeyError`` on the worker, or
+    silently resolve to a different built-in persona and produce a result that
+    does not match the same case run locally.
+
+    Register it from your Celery/Dramatiq app::
 
         @app.task(name="phonebot_qa.run_case")
         def run_case(payload):
-            return run_case_payload(payload)
+            return run_case_payload(payload, personas_dir="personas")
     """
     from ..adapters.bot.reference import ReferenceAppointmentBot
+    from ..scenario.loader import load_personas
     from .engine import RunEngine
 
     case = deserialize_case(payload)
     bot = (bot_factory or (lambda v: ReferenceAppointmentBot(version=v)))(
         case.bot_version
     )
-    engine = RunEngine(bot)
+    resolved = dict(personas or {})
+    if personas_dir:
+        from pathlib import Path as _Path
+
+        root = _Path(personas_dir)
+        if root.exists():
+            resolved.update(load_personas(root))
+    if engine_factory is not None:
+        engine = engine_factory(bot, resolved)
+    else:
+        engine = RunEngine(
+            bot, personas=resolved, voice_overrides=voice_overrides
+        )
     result = asyncio.run(engine.run_case(case))
     return result.model_dump(mode="json")

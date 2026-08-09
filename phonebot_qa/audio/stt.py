@@ -60,6 +60,12 @@ class STTEngine(ABC):
         """Recognize ``audio``."""
 
 
+def _get(mapping: dict, key: str, default: float) -> float:
+    """Read a numeric degradation field, treating only a missing key as absent."""
+    value = mapping.get(key)
+    return default if value is None else float(value)
+
+
 def word_error_rate(reference: str, hypothesis: str) -> float:
     """Standard WER: word-level Levenshtein distance / reference length."""
     ref = reference.split()
@@ -118,17 +124,25 @@ class DeterministicSTT(STTEngine):
             # Quadratic: mild noise is survivable, heavy noise is not.
             p += 0.85 * severity**2
 
-        loss = float(deg.get("packet_loss") or 0.0)
+        # NOTE: explicit ``is None`` checks, never ``or`` — 0.0 is falsy, and
+        # volume=0 / speed=0 (digital silence) is the *most* degraded input
+        # there is. Reading it back as the neutral 1.0 would score silence as
+        # perfectly intelligible.
+        loss = _get(deg, "packet_loss", 0.0)
         p += min(0.6, loss * 4.0)
 
-        speed = float(deg.get("speed") or 1.0)
+        speed = _get(deg, "speed", 1.0)
+        if speed <= 0.0:
+            return 1.0  # no audio survives a zero playback rate
         p += min(0.25, abs(speed - 1.0) * 0.6)
 
-        volume = float(deg.get("volume") or 1.0)
+        volume = _get(deg, "volume", 1.0)
+        if volume <= 0.0:
+            return 1.0  # muted: nothing to recognize
         if volume < 0.6:
             p += min(0.3, (0.6 - volume) * 0.7)
 
-        p += min(0.2, float(deg.get("clipped_fraction") or 0.0) * 2.0)
+        p += min(0.2, _get(deg, "clipped_fraction", 0.0) * 2.0)
 
         # Babble is the hardest noise for a recognizer to reject.
         if deg.get("noise") == "babble" and snr is not None:

@@ -61,7 +61,15 @@ def _initial_record(scenario: Scenario, dotted_key: str) -> dict[str, Any] | Non
 def persona_variants(
     scenario: Scenario, personas: tuple[str, ...] = DEFAULT_VARIANT_PERSONAS
 ) -> list[Scenario]:
-    """One variant per persona (expectations unchanged)."""
+    """One variant per persona (expectations unchanged).
+
+    Skipped for scripted scenarios (red-team attacks, discovery probes, ingested
+    production calls): their utterances are fixed, so every persona would play
+    an identical conversation and one defect would be reported N times — and
+    stored as N near-duplicate regression cases.
+    """
+    if scenario.user.user_visible.get("redteam_lines"):
+        return []
     out = []
     for persona in personas:
         if persona == scenario.user.persona:
@@ -123,9 +131,10 @@ def write_fault_variants(scenario: Scenario) -> list[Scenario]:
         if record is None:
             # A record that did not exist before (a create) must not appear.
             continue
-        original_db[key] = {
-            field: record.get(field) for field in fields if field in record
-        }
+        # Fields absent from the seed record must be asserted as *still absent*
+        # (None), not dropped — dropping them would silently empty the
+        # unchanged-state contract and let a partial write slip through.
+        original_db[key] = {field: record.get(field) for field in fields}
     expected["database"] = original_db
     # Keep the pre-write steps, drop the write itself, require the fault.
     expected["required_events"] = [
@@ -134,9 +143,13 @@ def write_fault_variants(scenario: Scenario) -> list[Scenario]:
     expected["forbidden_events"] = sorted(
         {*scenario.expected.forbidden_events, write_event}
     )
-    # No successful write may be recorded.
+    # No successful write of ANY kind may be recorded. Zeroing only the faulted
+    # tool would leave a sibling write tool's non-zero expectation in place,
+    # guaranteeing a false FAIL for a bot that correctly performed nothing.
     counts = dict(scenario.expected.tool_call_counts or {})
-    counts[write_tool] = 0
+    for tool in set(WRITE_EVENT_TOOLS.values()):
+        if tool in counts or tool == write_tool:
+            counts[tool] = 0
     expected["tool_call_counts"] = counts
     data["expected"] = expected
 

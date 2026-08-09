@@ -85,8 +85,13 @@ class LoopbackTransport(VoiceTransport):
 
         # Fold transport loss into the degradation record so STT accounts for it.
         degradation = dict(out.metadata.get("degradation") or {})
-        degradation["packet_loss"] = max(
-            float(degradation.get("packet_loss") or 0.0), self.packet_loss
+        # Losses compound: a frame survives only if BOTH the acoustic profile
+        # and the network kept it. Taking max() would make transport loss
+        # invisible whenever the profile already loses more, so a lossy trunk
+        # would not register in the recognition model at all.
+        prior = float(degradation.get("packet_loss") or 0.0)
+        degradation["packet_loss"] = round(
+            1.0 - (1.0 - prior) * (1.0 - self.packet_loss), 6
         )
         degradation["lost_ms"] = int(degradation.get("lost_ms") or 0) + lost_ms
         degradation["transport"] = self.name

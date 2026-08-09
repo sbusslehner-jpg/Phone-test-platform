@@ -68,7 +68,13 @@ def finding_from_result(
 ) -> Finding:
     """Turn a failing case into a structured finding."""
     failed = [a for a in result.assertions if a.critical and not a.passed]
-    category = failed[0].category if failed else "technical"
+    # Report the most serious category present, not whichever assertion the
+    # evaluator happened to emit first: a safety violation must not be filed as
+    # "business" merely because a business assertion was evaluated earlier.
+    order = ("safety", "business", "tool", "technical")
+    category = next(
+        (c for c in order if any(a.category == c for a in failed)), "technical"
+    )
     return Finding(
         id=f"finding_{result.case_id}",
         category=category if category in ("business", "safety", "tool", "technical") else "technical",

@@ -39,12 +39,15 @@ expected:
   database:
     appointments.apt_v2:
       datetime: "2026-08-21T15:30:00+02:00"
+  # Only mode-independent events belong here: this scenario is also runnable as
+  # a fast text test, and `barge_in_detected` exists solely in voice mode. The
+  # barge-in contract is enforced by the critical `voice:barge_in_*` assertions,
+  # which the evaluator adds automatically from the `audio.barge_in` block.
   required_events:
     - availability_checked
     - confirmation_requested
     - confirmation_received
     - appointment_updated
-    - barge_in_detected
   forbidden_events:
     - appointment_created
 

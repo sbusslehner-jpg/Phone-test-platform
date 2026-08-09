@@ -94,16 +94,31 @@ class BargeInController:
         config: BargeInConfig,
         events: EventLog | None = None,
         turn: int | None = None,
+        sla_ms: int = BARGE_IN_SLA_MS,
     ) -> BargeInResult:
-        """Interrupt an in-progress bot utterance and measure the response."""
+        """Interrupt an in-progress bot utterance and measure the response.
+
+        ``sla_ms`` lets a scenario tighten or relax the detection budget; it must
+        match the value the evaluator asserts against, otherwise
+        :attr:`BargeInResult.within_sla` and the ``voice:barge_in_sla``
+        assertion could disagree.
+        """
         result = BargeInResult()
         if bot_audio_ms < config.min_bot_audio_ms:
             # The bot finished before the caller could reasonably interrupt.
+            result.metadata["skipped"] = "bot utterance shorter than min_bot_audio_ms"
             return result
         if config.interrupt_after_ms >= bot_audio_ms:
+            result.metadata["skipped"] = "interrupt point is past the end of the utterance"
             return result
 
         result.attempted = True
+        if config.utterance and events is not None:
+            # Record what the caller talked over the bot with, so the trace
+            # explains the interruption rather than just timing it.
+            events.emit(
+                "interrupt_utterance", turn=turn, text=config.utterance
+            )
         start = config.interrupt_after_ms
         result.interrupt_start_ms = start
         if events is not None:
@@ -130,7 +145,7 @@ class BargeInController:
         result.stop_latency_ms = stop_at - start
         # Everything the caller said before the bot went quiet is degraded.
         result.user_audio_lost_ms = max(0, min(bot_audio_ms, stop_at) - start)
-        result.within_sla = self.detection_ms < BARGE_IN_SLA_MS
+        result.within_sla = result.stop_latency_ms <= sla_ms
 
         if events is not None:
             events.emit(

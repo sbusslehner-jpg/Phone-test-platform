@@ -18,6 +18,7 @@ produce a realistic word-error rate.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from array import array
@@ -28,6 +29,15 @@ from .buffer import AudioBuffer, clamp16
 
 #: Packets are 20 ms — the standard RTP frame for telephony codecs.
 PACKET_MS = 20
+
+
+def _stable_seed(*parts: object) -> int:
+    """A process-stable integer seed derived from the given parts.
+
+    ``hash()`` cannot be used: CPython randomises string hashing per process.
+    """
+    blob = ":".join(str(p) for p in parts).encode("utf-8")
+    return int(hashlib.sha256(blob).hexdigest()[:16], 16)
 
 
 @dataclass
@@ -64,7 +74,11 @@ class ChaosConfig:
 
 
 def _noise_sample(kind: str, rng: random.Random, state: dict[str, float]) -> float:
-    """One unit-variance-ish noise sample of the requested colour."""
+    """One raw noise sample of the requested colour (arbitrary amplitude).
+
+    Amplitude is *not* normalized here — :func:`_make_noise` measures the
+    generated sequence and scales it to the exact RMS the requested SNR needs.
+    """
     white = rng.uniform(-1.0, 1.0)
     if kind == "white":
         return white
@@ -86,6 +100,29 @@ def _noise_sample(kind: str, rng: random.Random, state: dict[str, float]) -> flo
         state["t"] = state.get("t", 0.0) + 1.0
         return math.sin(state["t"] * 0.0125) * 0.9 + 0.1 * white
     return white
+
+
+def _make_noise(kind: str, count: int, target_rms: float, rng: random.Random) -> list[float]:
+    """Generate ``count`` noise samples with exactly ``target_rms`` RMS.
+
+    The colours have wildly different natural amplitudes (a clamped random walk
+    is ~5x a uniform white sequence) and brown drifts with a DC offset. Rather
+    than assume unit variance, generate the sequence, strip DC, measure its true
+    RMS and rescale. This is what makes ``applied_snr_db`` the SNR that is
+    actually present in the audio, so profile severity ordering matches the
+    numbers scenarios are written against.
+    """
+    state: dict[str, float] = {}
+    raw = [_noise_sample(kind, rng, state) for _ in range(count)]
+    if not raw:
+        return raw
+    mean = sum(raw) / len(raw)
+    raw = [v - mean for v in raw]  # remove DC (matters for brown)
+    rms = math.sqrt(sum(v * v for v in raw) / len(raw))
+    if rms <= 1e-12:
+        return [0.0] * count
+    gain = target_rms / rms
+    return [v * gain for v in raw]
 
 
 def _resample(buffer: AudioBuffer, speed: float) -> AudioBuffer:
@@ -117,7 +154,11 @@ class AudioChaos:
 
     def apply(self, buffer: AudioBuffer) -> AudioBuffer:
         cfg = self.config
-        rng = random.Random((self.seed, cfg.name, len(buffer)).__hash__())
+        # Seed from a stable digest, NOT hash(): CPython salts str hashing with
+        # a per-process PYTHONHASHSEED, which would make the same (seed,
+        # profile) produce different audio in every interpreter — breaking the
+        # replay guarantee that regression cases depend on (§24).
+        rng = random.Random(_stable_seed(self.seed, cfg.name, len(buffer)))
         out = buffer.copy()
 
         # 1. Speaking rate.
@@ -127,17 +168,17 @@ class AudioChaos:
         if abs(cfg.volume - 1.0) > 1e-6:
             out.samples = array("h", (clamp16(s * cfg.volume) for s in out.samples))
 
-        # 3. Additive noise at the requested SNR.
+        # 3. Additive noise at the requested SNR (amplitude-exact).
         applied_snr = None
         if cfg.snr_db is not None and out.samples:
             signal_rms = max(out.rms, 1e-6)
             noise_rms = signal_rms / (10 ** (cfg.snr_db / 20.0))
-            state: dict[str, float] = {}
-            scale = noise_rms * 32767.0
-            noisy = array("h")
-            for s in out.samples:
-                noisy.append(clamp16(s + _noise_sample(cfg.noise, rng, state) * scale))
-            out.samples = noisy
+            noise = _make_noise(
+                cfg.noise, len(out.samples), noise_rms * 32767.0, rng
+            )
+            out.samples = array(
+                "h", (clamp16(s + n) for s, n in zip(out.samples, noise))
+            )
             applied_snr = cfg.snr_db
 
         # 4. Packet loss — zero whole 20 ms frames, as a jitter buffer would.

@@ -54,6 +54,8 @@ class VoiceConfig:
     supports_barge_in: bool = True
     barge_in_detection_ms: int = 120
     barge_in_stop_ms: int = 60
+    #: Detection budget asserted against (concept §14 default: 300 ms).
+    barge_in_sla_ms: int = 300
     sample_rate: int = 16000
     #: Extra overrides applied on top of the named profile.
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +82,7 @@ class VoiceConfig:
             supports_barge_in=raw.pop("supports_barge_in", True),
             barge_in_detection_ms=raw.pop("barge_in_detection_ms", 120),
             barge_in_stop_ms=raw.pop("barge_in_stop_ms", 60),
+            barge_in_sla_ms=raw.get("barge_in_sla_ms", 300),
             sample_rate=raw.pop("sample_rate", 16000),
             overrides=raw,
         )
@@ -97,14 +100,27 @@ def build_transport(
     """Instantiate the configured transport (concept §11)."""
     chaos = config.chaos_config()
     kind = config.transport
+    # A scenario that declares latency/jitter must have it honoured on every
+    # transport, not only loopback; unset values fall back to each transport's
+    # realistic defaults.
     if kind == "sip":
         from ..adapters.transport.sip import SIPTransport
 
-        return SIPTransport(seed=seed, events=events, latency_ms=chaos.latency_ms or 120)
+        return SIPTransport(
+            seed=seed,
+            events=events,
+            latency_ms=chaos.latency_ms or 120,
+            jitter_ms=chaos.jitter_ms or 30,
+        )
     if kind == "webrtc":
         from ..adapters.transport.webrtc import WebRTCTransport
 
-        return WebRTCTransport(seed=seed, events=events, latency_ms=chaos.latency_ms or 60)
+        return WebRTCTransport(
+            seed=seed,
+            events=events,
+            latency_ms=chaos.latency_ms or 60,
+            jitter_ms=chaos.jitter_ms or 45,
+        )
     return LoopbackTransport(
         latency_ms=chaos.latency_ms,
         jitter_ms=chaos.jitter_ms,
@@ -175,6 +191,7 @@ class VoiceConversationRunner:
         barge_results: list[BargeInResult] = []
         wer_values: list[float] = []
 
+        session = None
         context = SessionContext(
             scenario_id=scenario.id,
             proxy=proxy,
@@ -212,13 +229,20 @@ class VoiceConversationRunner:
                 session.state["turn_index"] = turn_index
 
                 # -- 1. Caller speaks -------------------------------------- #
+                # Chaos is applied first because it changes how long the caller
+                # is actually speaking (``speed``): a 25% faster speaker really
+                # does occupy the line for less time, and the clock must reflect
+                # the audio that was transmitted, not the pre-chaos rendering.
                 events.emit("user_audio_started", turn=turn_index, text=user_turn.text)
                 spoken = self.user_tts.synthesize(
                     user_turn.text, sample_rate=config.sample_rate
                 )
-                events.clock.advance(spoken.duration_ms)
+                degraded = chaos.apply(spoken)
+                events.clock.advance(degraded.duration_ms)
                 events.emit(
-                    "user_audio_finished", turn=turn_index, audio_ms=spoken.duration_ms
+                    "user_audio_finished",
+                    turn=turn_index,
+                    audio_ms=degraded.duration_ms,
                 )
                 # Voice "latency" is *response* latency: from the moment the
                 # caller stops speaking to the moment the bot starts speaking.
@@ -227,8 +251,7 @@ class VoiceConversationRunner:
                 # long utterance look like a slow bot (concept §18).
                 t0 = events.clock.now_ms
 
-                # -- 2. Chaos + transport ---------------------------------- #
-                degraded = chaos.apply(spoken)
+                # -- 2. Transport ------------------------------------------ #
                 arriving = await transport.send(degraded)
                 stats = transport.stats()
                 if stats.one_way_latency_ms:
@@ -267,16 +290,22 @@ class VoiceConversationRunner:
                         config=config.barge_in,
                         events=events,
                         turn=turn_index,
+                        sla_ms=config.barge_in_sla_ms,
                     )
                     if barge.attempted:
                         barge_results.append(barge)
 
+                # ``bot_audio_stop_ms`` is an offset *into* the utterance, so an
+                # interrupted turn plays only up to that offset — never more
+                # than the full utterance.
                 if barge is not None and barge.attempted and barge.detected:
-                    # The bot stopped early; only the played part counts.
-                    events.clock.advance(barge.bot_audio_stop_ms or bot_audio_ms)
+                    played_ms = min(bot_audio_ms, barge.bot_audio_stop_ms or bot_audio_ms)
                 else:
-                    events.clock.advance(bot_audio_ms)
-                events.emit("bot_audio_finished", turn=turn_index)
+                    played_ms = bot_audio_ms
+                events.clock.advance(played_ms)
+                events.emit(
+                    "bot_audio_finished", turn=turn_index, played_ms=played_ms
+                )
 
                 events.emit(
                     "bot_message", turn=turn_index, text=response.text, done=response.done
@@ -303,12 +332,23 @@ class VoiceConversationRunner:
                 if user_turn.finished or simulator.finished:
                     break
 
-            await transport.disconnect()
-            await voice_bot.stop_session(session)
             events.emit("session_ended")
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             events.emit("run_error", error=error)
+        finally:
+            # Always tear the call down, even on error: otherwise a SIP/WebRTC
+            # leg leaks and the sip_bye / webrtc_closed events never reach the
+            # trace, so telephony assertions would silently miss them.
+            try:
+                await transport.disconnect()
+            except Exception:  # pragma: no cover - teardown must not mask errors
+                pass
+            if session is not None:
+                try:
+                    await voice_bot.stop_session(session)
+                except Exception:  # pragma: no cover
+                    pass
 
         conversation.duration_ms = events.clock.now_ms
         avg_wer = sum(wer_values) / len(wer_values) if wer_values else None

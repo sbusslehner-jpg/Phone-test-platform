@@ -130,6 +130,7 @@ class RunEngine:
         simulator_factory=_default_simulator,
         queue=None,
         voice_config=None,
+        voice_overrides: dict | None = None,
     ) -> None:
         self.bot = bot or ReferenceAppointmentBot()
         self.pipeline = pipeline or EvaluationPipeline()
@@ -142,8 +143,13 @@ class RunEngine:
         from .workers import InProcessQueue
 
         self.queue = queue or InProcessQueue(concurrency)
-        # Voice-mode configuration (concept §12.2/§34); None => text only.
+        # Voice-mode configuration (concept §12.2/§34).
+        # ``voice_config`` is a full default config; ``voice_overrides`` is a
+        # sparse dict of explicitly-requested fields (e.g. a CLI noise sweep)
+        # that wins over the scenario. Anything not named is left to the
+        # scenario's own ``audio:`` block.
         self.voice_config = voice_config
+        self.voice_overrides = dict(voice_overrides or {})
 
     def _build_runner(self, case: TestCase):
         """Text or voice runner depending on the case's mode (concept §12)."""
@@ -151,14 +157,16 @@ class RunEngine:
             return ConversationRunner(self.bot, config=self.runner_config)
         from ..runner.voice import VoiceConfig, VoiceConversationRunner
 
-        # Start from the scenario's own ``audio:`` block, then let an explicit
-        # engine-level config (a CLI noise sweep) override the profile/transport.
-        # Scenario-specific semantics like barge-in are always preserved.
-        config = VoiceConfig.from_scenario(case.scenario)
-        override = self.voice_config
-        if override is not None:
-            config.profile = override.profile
-            config.transport = override.transport
+        # Start from the scenario's own ``audio:`` block. A full engine-level
+        # config applies only to scenarios that declare no audio of their own;
+        # explicit overrides (a CLI noise sweep) always win.
+        if case.scenario.audio:
+            config = VoiceConfig.from_scenario(case.scenario)
+        else:
+            config = self.voice_config or VoiceConfig.from_scenario(case.scenario)
+        for field_name, value in self.voice_overrides.items():
+            if value is not None and hasattr(config, field_name):
+                setattr(config, field_name, value)
         return VoiceConversationRunner(self.bot, config=config)
 
     async def run_case(self, case: TestCase) -> CaseResult:
@@ -179,9 +187,32 @@ class RunEngine:
             seed=case.seed,
         )
 
+    async def _run_case_isolated(self, case: TestCase) -> CaseResult:
+        """Run one case, converting an unexpected crash into an ERROR result.
+
+        A suite is thousands of cases (§28); one malformed scenario or adapter
+        bug must not abort the run and discard every other result. The failure
+        is still surfaced — as a normal ERROR case that fails the gate.
+        """
+        try:
+            return await self.run_case(case)
+        except Exception as exc:
+            return CaseResult(
+                case_id=case.case_id,
+                scenario_id=case.scenario.id,
+                scenario_tags=list(case.scenario.tags),
+                persona_id=case.persona_id,
+                bot_version=self.bot.version,
+                mode=case.mode,
+                seed=case.seed,
+                result="ERROR",
+                critical_failure=f"{type(exc).__name__}: {exc}",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
     async def run_cases(self, cases: list[TestCase]) -> list[CaseResult]:
         """Run every case through the configured queue, preserving input order."""
-        return await self.queue.map(cases, self.run_case)
+        return await self.queue.map(cases, self._run_case_isolated)
 
 
 async def run_suite(

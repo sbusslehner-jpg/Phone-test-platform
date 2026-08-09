@@ -352,29 +352,47 @@ def voice_assertions(scenario, voice) -> list[AssertionResult]:
     audio_cfg = dict(getattr(scenario, "audio", None) or {})
     results: list[AssertionResult] = []
 
-    if audio_cfg.get("barge_in") and voice.barge_in_detected is not None:
-        detected = bool(voice.barge_in_detected)
-        results.append(
-            AssertionResult(
-                name="voice:barge_in_detected",
-                category="technical",
-                passed=detected,
-                critical=True,
-                detail="" if detected else "bot did not stop when the caller interrupted",
-            )
-        )
-        sla = int(audio_cfg.get("barge_in_sla_ms", 300))
-        if detected and voice.stop_latency_ms is not None:
-            ok = voice.stop_latency_ms <= sla
+    if audio_cfg.get("barge_in"):
+        # A declared barge-in test that never fired is a FAILED test, not an
+        # absent one: silently dropping it would report PASS for a scenario
+        # whose whole point went unexercised.
+        if voice.barge_in_detected is None:
             results.append(
                 AssertionResult(
-                    name="voice:barge_in_sla",
+                    name="voice:barge_in_attempted",
                     category="technical",
-                    passed=ok,
+                    passed=False,
                     critical=True,
-                    detail="" if ok else f"stop latency {voice.stop_latency_ms}ms > {sla}ms SLA",
+                    detail=(
+                        "scenario declares a barge-in test but no interruption was "
+                        "attempted (bot utterance too short, or interrupt_after_ms "
+                        "past its end) — the test did not run"
+                    ),
                 )
             )
+        else:
+            detected = bool(voice.barge_in_detected)
+            results.append(
+                AssertionResult(
+                    name="voice:barge_in_detected",
+                    category="technical",
+                    passed=detected,
+                    critical=True,
+                    detail="" if detected else "bot did not stop when the caller interrupted",
+                )
+            )
+            sla = int(audio_cfg.get("barge_in_sla_ms", 300))
+            if detected and voice.stop_latency_ms is not None:
+                ok = voice.stop_latency_ms <= sla
+                results.append(
+                    AssertionResult(
+                        name="voice:barge_in_sla",
+                        category="technical",
+                        passed=ok,
+                        critical=True,
+                        detail="" if ok else f"stop latency {voice.stop_latency_ms}ms > {sla}ms SLA",
+                    )
+                )
 
     max_wer = audio_cfg.get("max_wer")
     if max_wer is not None and voice.stt_wer is not None:
@@ -383,8 +401,11 @@ def voice_assertions(scenario, voice) -> list[AssertionResult]:
             AssertionResult(
                 name="voice:wer_budget",
                 category="technical",
+                # Critical by default: a declared recognition budget that is
+                # blown is a real result. A scenario can opt out explicitly with
+                # ``wer_critical: false`` when it only wants the number reported.
+                critical=bool(audio_cfg.get("wer_critical", True)),
                 passed=ok,
-                critical=bool(audio_cfg.get("wer_critical", False)),
                 detail="" if ok else f"WER {voice.stt_wer:.2f} > budget {float(max_wer):.2f}",
             )
         )

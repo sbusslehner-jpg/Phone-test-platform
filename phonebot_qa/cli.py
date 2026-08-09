@@ -64,15 +64,29 @@ def _load_personas(personas_dir: str):
     return load_personas(root) if root.exists() else {}
 
 
-def _voice_config(args):
-    """Suite-wide voice config from CLI flags (scenario ``audio:`` still wins)."""
-    profile = getattr(args, "audio_profile", None)
-    transport = getattr(args, "transport", None)
-    if not profile and not transport:
-        return None
-    from .runner.voice import VoiceConfig
+VALID_MODES = ("text", "voice")
 
-    return VoiceConfig(profile=profile or "clean", transport=transport or "loopback")
+
+def _voice_overrides(args) -> dict:
+    """Only the voice fields the operator explicitly asked for.
+
+    Returning a sparse dict (rather than a fully-populated config) is what keeps
+    a ``--profiles`` sweep from silently replacing a scenario's declared
+    transport, or a ``--transport`` flag from resetting its noise profile.
+    """
+    return {
+        "profile": getattr(args, "audio_profile", None),
+        "transport": getattr(args, "transport", None),
+    }
+
+
+def _validate_modes(modes) -> list[str]:
+    bad = [m for m in modes if m not in VALID_MODES]
+    if bad:
+        raise SystemExit(
+            f"unknown mode(s) {', '.join(bad)}; valid modes: {', '.join(VALID_MODES)}"
+        )
+    return list(modes)
 
 
 async def _run_summary(args, scenarios, bot) -> RunSummary:
@@ -82,14 +96,14 @@ async def _run_summary(args, scenarios, bot) -> RunSummary:
         scenarios,
         personas=args.persona,
         seeds=seeds,
-        modes=args.modes,
+        modes=_validate_modes(args.modes),
         bot_version=bot.version,
     )
     engine = RunEngine(
         bot,
         personas=personas,
         concurrency=args.concurrency,
-        voice_config=_voice_config(args),
+        voice_overrides=_voice_overrides(args),
     )
     results = await engine.run_cases(cases)
     return summarize(results, bot.version)
@@ -295,8 +309,10 @@ def cmd_voice(args) -> int:
         return 2
     bot = build_bot(args.bot_version)
     args.modes = ["voice"]
-    profiles = args.profiles or [args.audio_profile or "clean"]
+    # ``None`` means "leave each scenario's own profile alone" (no override).
+    profiles = args.profiles or [args.audio_profile]
     failures = 0
+    reports = []
     for profile in profiles:
         args.audio_profile = profile
         summary = asyncio.run(_run_summary(args, scenarios, bot))
@@ -306,10 +322,26 @@ def cmd_voice(args) -> int:
             if r.voice and r.voice.stt_wer is not None
         ]
         mean_wer = sum(wers) / len(wers) if wers else 0.0
-        print(f"\n── audio profile: {profile} ──")
+        print(f"\n── audio profile: {profile or 'per-scenario'} ──")
         _print_summary(summary)
         print(f"  mean WER={mean_wer:.2f}")
         failures += summary.critical_failures + summary.errored
+        report = summary.to_report()
+        report["audio_profile"] = profile
+        report["mean_wer"] = round(mean_wer, 4)
+        reports.append(report)
+        _maybe_capture_regressions(summary, args, scenarios)
+        if args.junit:
+            # One file per profile so a sweep does not overwrite itself.
+            path = args.junit if len(profiles) == 1 else f"{args.junit}.{profile or 'default'}"
+            _write_junit(summary, path)
+            print(f"  wrote JUnit report to {path}")
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps(reports if len(reports) > 1 else reports[0], indent=2, ensure_ascii=False),
+            "utf-8",
+        )
+        print(f"\nWrote JSON report to {args.json}")
     return 0 if failures == 0 else 1
 
 
