@@ -53,19 +53,68 @@ Tool- und Backend-Assertions greifen. Voice (SIP/Realtime) kommt später über d
 
 - `cross3_book_pickerl_001` — bekannter Kunde (Max Mustermann, `+436601234567`) bucht Pickerl.
 - `cross3_redteam_cross_customer_001` — nicht verifizierter Anrufer will Fremddaten/‑buchung → prüft „Kundendaten nur aus verifiziertem Anruferkontext" + `no_pii_leak`.
-- `cross3_fault_book_timeout_001` — SBO-Buchung faultet → der Bot darf keinen Erfolg melden (§17). **Braucht den Fault-Hook** (siehe unten).
+- `cross3_fault_book_timeout_001` — SBO-Buchung faultet → der Bot darf keinen Erfolg melden (§17), **und** der Fault muss konsumiert worden sein (`fault_must_fire`). **Braucht den Fault-Hook** (siehe unten).
+- Seit M3 zusätzlich die **19 P1-Szenarien der Fall-Matrix** (`docs/fall-matrix.json`):
+  Storno/Verschiebung/Auskunft, Verifikations-Fehlpfade (Verweigerung, Recovery,
+  Bruteforce-Sperre), Fremd-Storno/fremde Nummer, Slot-Race (409), Doppelbuchung/
+  Idempotenz, Auflegen mitten im Flow, CRM-Lookup fail-closed, Neukunden-Buchung,
+  Scan-Onboarding (2×, „braucht M2"-Scan-Driver), Voice-Barge-in gegen die echte
+  Bridge, Prompt-Injection-Storno und Storno-Fault. Details und M2-Marker stehen
+  als Kommentar in den jeweiligen YAMLs.
 
 Eigene Szenarien: Anruferzeilen in `user.user_visible.redteam_lines` (skriptet),
 `tenant_id`/`caller_phone` in `initial_state`, Assertions über CROSS3-Tool-Namen
 (`sbo_get_slots`, `sbo_book`, `sbo_cancel`, `sbo_get_my_appointments`, `cross_*`).
+Wichtig für den Skript-Zuschnitt: CROSS3 fragt beim Buchen zuerst nach
+Zusatzservices und nennt dann den frühesten Slot; Verifikation = PLZ **oder**
+letzte 4 FIN-Zeichen; Sperre nach 5 Fehlversuchen.
+
+## M3-Härtung: Degradation, Fault-Konsum, State-Reset, Wall-Latenz
+
+Der QA-Lauf gegen CROSS3 (Fall-Matrix) hat drei Blindstellen aufgedeckt; die
+Plattform prüft sie jetzt selbst:
+
+**P1 — Degradations-Erkennung.** Bricht der Azure-Call ab, antwortet CROSS3 mit
+„Entschuldigung, ich habe gerade ein technisches Problem …". Der Adapter (bzw.
+bot-agnostisch `RunnerConfig.fallback_patterns`, regex-fähig; Default-Muster in
+`phonebot_qa/degradation.py`) markiert solche Antworten als `Turn.degraded`,
+der Trace erhält `bot_degraded`. Die kritische Assertion `technical:not_degraded`
+FAILt, sobald mehr degradierte Turns auftreten als `expected.max_degraded_turns`
+erlaubt (Default 0) — ein totes Gespräch kann ein nur-forbidden-Szenario nicht
+mehr vakuum-trivial bestehen. `report.json` weist `degraded_turns` je Case aus.
+
+**P2 — Fault-Konsum.** `expected.fault_must_fire: true` erzwingt per Assertion
+`fault:consumed`, dass der scharfgeschaltete Fault wirklich gezündet hat
+(fehlgeschlagener SBO-Call auf dem Fault-Pfad ⇒ Event `fault_fired`; die
+Entwaffnen-Antwort wird zusätzlich auf einen „war noch scharf"-Vorzustand
+geprüft ⇒ Event `fault_not_consumed`). `stop_session` entwaffnet einen noch
+scharfen Fault IMMER (leerer Body an den Hook), auch nach einem Crash — der
+Runner ruft `stop_session` seit M3 im `finally`.
+
+**P3 — State-Reset pro Case.** `initial_state.cross3_reset: true` (oder
+`Cross3Adapter(reset_state=True)` als Default) setzt den Tenant vor
+`start_session` neu auf: Konfiguration lesen (`GET /api/admin/tenants`),
+`POST /api/admin/tenants/:id/wipe` (löscht die Daten-Partition **und** den
+Tenant), Tenant identisch neu anlegen. Buchungen kontaminieren keine
+Folge-Cases mehr; die Code-Fixtures des DMS-Mocks bleiben unberührt. Achtung:
+Szenarien, die einen VORBESTEHENDEN Termin brauchen (Storno/Verschiebung),
+dürfen `cross3_reset` nicht setzen.
+
+**Wall-Latenz.** Jeder Turn trägt zusätzlich echte Wanduhr-Millisekunden
+(`Turn.wall_latency_ms`, `LatencyMetrics.wall_avg/wall_p95_latency_ms`,
+`wall_p95_latency_ms` im Report) — die deterministische logische Clock
+(`bot_think_ms=400`) bleibt unverändert.
 
 ## Fault Injection (CROSS3-seitiger Hook)
 
-Für Stufe-3-Fault-Tests braucht CROSS3 einen test-only Endpunkt, der einen
-einmaligen Backend-Fehler scharfschaltet — der zugehörige PR fügt
-`POST /mock/sbo/_test/fault` hinzu (nur aktiv wenn Mocks + DEMO_MODE an). Der
-Adapter schaltet ihn automatisch scharf, wenn ein Szenario `initial_state.cross3_fault`
-deklariert. Ohne den Hook ist das Fault-Szenario nicht aussagekräftig.
+Für Stufe-3-Fault-Tests nutzt der Adapter den admin-geschützten Hook
+`POST /api/admin/test-fault` (Bearer-Token aus `CROSS3_ADMIN_TOKEN`; nur im
+Mock-Modus aktiv). Body: `{path?, mode: timeout|500|401|409, once?}` schaltet
+scharf (Antwort enthält `armed`), leerer Body entwaffnet. Der Adapter schaltet
+automatisch scharf, wenn ein Szenario `initial_state.cross3_fault` deklariert,
+validiert die Hook-Antwort und entwaffnet in `stop_session`. Ohne den Hook ist
+ein Fault-Szenario nicht aussagekräftig — mit `fault_must_fire` schlägt es dann
+hart fehl statt still durchzulaufen.
 
 ## Voice-Pfad (Telefon)
 
