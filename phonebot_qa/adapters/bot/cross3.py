@@ -113,7 +113,6 @@ class Cross3Adapter(BotAdapter):
         self.admin_token = admin_token or os.environ.get("CROSS3_ADMIN_TOKEN") or ""
         # Injectable transport: real httpx by default, a stub in unit tests.
         self._chat_fn = chat_fn
-        self._client = None
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -124,20 +123,28 @@ class Cross3Adapter(BotAdapter):
 
     # -- transport --------------------------------------------------------- #
 
-    async def _chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _new_client(self):  # pragma: no cover - needs httpx
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError(
+                "Cross3Adapter requires httpx: pip install 'phonebot-qa[api]'"
+            ) from exc
+        return httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout, headers=self._headers)
+
+    async def _chat(self, session: BotSession | None, payload: dict[str, Any]) -> dict[str, Any]:
         if self._chat_fn is not None:
             return await self._chat_fn(payload)
-        if self._client is None:  # pragma: no cover - needs a running CROSS3
-            try:
-                import httpx
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Cross3Adapter requires httpx: pip install 'phonebot-qa[api]'"
-                ) from exc
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url, timeout=self.timeout, headers=self._headers
-            )
-        resp = await self._client.post("/api/chat", json=payload)  # pragma: no cover
+        # Der Client gehört zur SITZUNG, nicht zum Adapter: der Runner fährt
+        # Szenarien nebenläufig gegen dieselbe Adapter-Instanz, und ein
+        # gemeinsamer Client würde von der ersten endenden Sitzung geschlossen —
+        # allen anderen bricht die laufende Anfrage als ReadError weg.
+        client = session.state.get("client") if session is not None else None
+        if client is None:  # pragma: no cover - needs a running CROSS3
+            client = self._new_client()
+            if session is not None:
+                session.state["client"] = client
+        resp = await client.post("/api/chat", json=payload)  # pragma: no cover
         resp.raise_for_status()  # pragma: no cover
         return resp.json()  # pragma: no cover
 
@@ -193,12 +200,13 @@ class Cross3Adapter(BotAdapter):
         history.append({"role": "user", "content": message})
 
         data = await self._chat(
+            session,
             {
                 "tenantId": st["tenant_id"],
                 "callerPhone": st["caller_phone"],
                 "persona": self.persona,
                 "messages": history,
-            }
+            },
         )
 
         reply = str(data.get("reply", ""))
@@ -219,9 +227,9 @@ class Cross3Adapter(BotAdapter):
         )
 
     async def stop_session(self, session: BotSession) -> None:
-        if self._client is not None:  # pragma: no cover - needs a running CROSS3
-            await self._client.aclose()
-            self._client = None
+        client = session.state.pop("client", None)
+        if client is not None:  # pragma: no cover - needs a running CROSS3
+            await client.aclose()
 
     # -- translation into the platform's assertion vocabulary -------------- #
 
