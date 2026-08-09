@@ -67,7 +67,74 @@ einmaligen Backend-Fehler scharfschaltet — der zugehörige PR fügt
 Adapter schaltet ihn automatisch scharf, wenn ein Szenario `initial_state.cross3_fault`
 deklariert. Ohne den Hook ist das Fault-Szenario nicht aussagekräftig.
 
-## Zwei ehrliche Einschränkungen
+## Voice-Pfad (Telefon)
+
+CROSS3s Telefon-Kanal ist eine **Voll-Duplex-Media-Bridge**:
+
+```
+PSTN → Peoplefone → Asterisk + Relay ──WSS /ws/phone-media──▶ App ──▶ Azure Realtime
+```
+
+Das Asterisk-Relay ist bewusst „dumm": es authentifiziert per `x-relay-token`,
+schickt einen `{"type":"start", did, callerId, callUuid, format:"slin"}`-Frame
+und streamt dann **binäres SLIN-Audio** (8 kHz, 16-bit LE mono) in beide
+Richtungen. Steuer-Frames App→Relay: `{"type":"clear"}` bei Barge-in,
+`{"type":"hangup", reason}` am Ende; Relay→App `{"type":"stop"}`.
+
+Die Plattform testet Voice, indem sie **selbst das Relay spielt** —
+`Cross3VoicePhoneClient` (`adapters/transport/cross3_phone.py`) spricht genau
+dieses Protokoll. Damit läuft CROSS3s echte Voice-Bridge (Media, Azure Realtime
+STT/TTS, semantic-VAD Turn-Detection, Barge-in) ohne PSTN/Asterisk. Der Client
+ist gegen einen Fake-`/ws/phone-media`-Server verifiziert
+(`tests/test_cross3_phone_client.py`) — ohne CROSS3 und ohne Azure.
+
+```python
+import asyncio
+from phonebot_qa.adapters.transport import Cross3VoicePhoneClient
+from phonebot_qa.audio import DeterministicTTS, apply_chaos, get_profile
+
+async def call():
+    tts = DeterministicTTS()   # synthesize(..., sample_rate=8000) → SLIN-Rate
+    client = Cross3VoicePhoneClient("ws://127.0.0.1:8080", relay_token="<RELAY_TOKEN>")
+    await client.connect(did="<AT997-DID>", caller_id="+436601234567")
+    greeting = await client.next_bot_turn()          # Agent grüßt zuerst
+    caller = apply_chaos(tts.synthesize("Ich möchte einen Pickerl-Termin.", sample_rate=8000),
+                         get_profile("bad_connection"), seed=1)
+    await client.send_audio(caller)
+    reply = await client.next_bot_turn()             # Bot-Audio (SLIN 8k)
+    # reply.to_buffer() → an einen echten STTEngine geben, um zu scoren
+    await client.close()
+asyncio.run(call())
+```
+
+Voraussetzungen: `pip install 'phonebot-qa[voice]'`, `RELAY_TOKEN` in CROSS3
+gesetzt, ein Azure-**Realtime**-Deployment, und die Tenant-`did` (DID→Tenant via
+`resolveTenantByDid`).
+
+### Was Voice testet — und was nicht
+
+| | Chat-Kanal | Voice-Kanal |
+|---|---|---|
+| Tool-/Backend-Assertions | ✅ (toolEvents) | ⚠️ nicht über den Relay — Buchung nachträglich im SBO-Mock lesen |
+| STT/TTS/Turn-Taking | – | ✅ |
+| Barge-in + SLA (<300 ms) | – | ✅ (`clear`-Frame) |
+| Hangup/Weiterleitung | – | ✅ (`hangup`/`transfer`) |
+
+Voice **ergänzt** Chat, ersetzt es nicht: die deterministischen
+Business/Tool-Assertions laufen weiter über den Chat-Kanal (der Voll-Duplex-Relay
+leitet keine Tool-Calls durch — die laufen intern in der Bridge). Ob eine per
+Voice ausgelöste Buchung wirklich gelandet ist, prüfst du durch einen Lese-Aufruf
+auf den SBO-Mock nach dem Anruf.
+
+Zwei ehrliche Grenzen des Voice-Pfads:
+- **STT zum Scoren:** was CROSS3 *gesagt* hat, kennt die Plattform nur über einen
+  **echten** `STTEngine` auf `reply.to_buffer()`. Der deterministische Simulator-STT
+  kennt nur die selbst erzeugten Audios, nicht CROSS3s Antworten.
+- **Turn-Modell:** der Relay-Stream ist voll-duplex; der Client schneidet Turns
+  über eine Stille-Lücke. Ein voll gescorter, turn-basierter Lauf über den echten
+  VoiceRunner ist der nächste Ausbauschritt (der Protokoll-Client dafür steht).
+
+## Zwei ehrliche Einschränkungen (Chat)
 
 - **Azure OpenAI:** Der Chat-Kanal ruft echtes Azure OpenAI, das LLM variiert.
   Die **deterministischen** Backend/Tool-Assertions bleiben belastbar; die

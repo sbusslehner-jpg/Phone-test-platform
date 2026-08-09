@@ -32,6 +32,10 @@ deepeval = [
     # Optional LLM-as-a-judge backend behind the Judge interface (concept §30).
     "deepeval>=1.0",
 ]
+voice = [
+    # Voice end-to-end client for CROSS3's /ws/phone-media relay protocol (§12.2).
+    "websockets>=12",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

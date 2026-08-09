@@ -13,11 +13,14 @@ so voice tests are reproducible without a PBX. Real SIP/WebRTC stacks
 from __future__ import annotations
 
 from .base import TransportStats, VoiceTransport
+from .cross3_phone import BotTurn, Cross3VoicePhoneClient
 from .loopback import LoopbackTransport
 from .sip import SIPTransport
 from .webrtc import WebRTCTransport
 
 __all__ = [
+    "BotTurn",
+    "Cross3VoicePhoneClient",
     "LoopbackTransport",
     "SIPTransport",
     "TransportStats",
