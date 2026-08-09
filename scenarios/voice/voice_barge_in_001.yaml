@@ -1,0 +1,53 @@
+# Barge-in test (concept §14).
+#
+# The caller interrupts 850 ms into the bot's utterance. The bot must notice and
+# stop talking within the 300 ms SLA; the assertions voice:barge_in_detected and
+# voice:barge_in_sla are critical, so a bot that talks over its caller fails.
+id: voice_barge_in_001
+description: >
+  Kunde unterbricht den Bot mitten im Satz. Der Bot muss die Unterbrechung
+  erkennen und innerhalb von 300 ms verstummen.
+tags: [voice, barge_in, core]
+
+initial_state:
+  session_customer_id: customer_v2
+  customers:
+    - id: customer_v2
+      name: Bernd Barge
+  appointments:
+    - id: apt_v2
+      customer_id: customer_v2
+      datetime: "2026-08-19T09:00:00+02:00"
+
+audio:
+  profile: clean            # isolate barge-in behaviour from noise effects
+  transport: webrtc
+  barge_in:
+    interrupt_after_ms: 850
+    min_bot_audio_ms: 300
+  barge_in_sla_ms: 300
+
+user:
+  goal:
+    type: move_appointment
+    target_datetime: "2026-08-21T15:30:00+02:00"
+  persona: impatient
+  user_visible:
+    desired_time: "2026-08-21T15:30:00+02:00"
+
+expected:
+  database:
+    appointments.apt_v2:
+      datetime: "2026-08-21T15:30:00+02:00"
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_updated
+    - barge_in_detected
+  forbidden_events:
+    - appointment_created
+
+limits:
+  max_turns: 15
+  max_duration_seconds: 300

@@ -19,13 +19,17 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: pip install -e ".[api,dev]"
+        run: pip install -e ".[api,db,dev]"
       - name: Unit tests
         run: pytest -q
       - name: Core scenarios + regression gate (fast text tests)
         run: phonebot-qa run --suite all --junit report.xml
       - name: Red-team suite
         run: phonebot-qa redteam
+      - name: Automatic test discovery (§23)
+        run: phonebot-qa discover --suite booking
+      - name: Voice end-to-end (§34)
+        run: phonebot-qa voice --suite voice
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4

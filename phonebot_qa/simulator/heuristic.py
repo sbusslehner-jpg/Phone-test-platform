@@ -16,9 +16,15 @@ the expected outcome deterministic regardless of persona.
 from __future__ import annotations
 
 import random
+import re
 from typing import Any
 
 from .base import SimulatorTurn, UserSimulator
+
+#: Matches an ISO-8601 datetime quoted back by the bot in a confirmation.
+_ISO_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
 
 _CONFIRM_REQUEST_KW = (
     "ist das korrekt",
@@ -57,6 +63,11 @@ class HeuristicSimulator(UserSimulator):
         self._phase = "opening"
         self._utterances = 0
         self._unknown_streak = 0
+        self._misconfirmations = 0
+        #: The time the caller is asking for *right now*. Starts as the goal's
+        #: target and moves when they fall back to an alternative or correct
+        #: themselves — the read-back must match this, not the original wish.
+        self._requested_time: str | None = None
 
     # -- knowledge accessors ---------------------------------------------- #
 
@@ -131,6 +142,7 @@ class HeuristicSimulator(UserSimulator):
         if _any(bot, _NOT_AVAILABLE_KW):
             alt = self._alternative_time()
             if alt:
+                self._requested_time = alt
                 return SimulatorTurn(
                     text=self._flavour(f"Dann nehmen wir bitte {alt}.")
                 )
@@ -150,9 +162,28 @@ class HeuristicSimulator(UserSimulator):
             if self._phase == "await_correct":
                 self._phase = "await_confirm"
                 desired = self._desired_time()
+                self._requested_time = desired
                 return SimulatorTurn(
                     text=self._flavour(
                         f"Nein, entschuldigung — eigentlich möchte ich auf {desired}."
+                    )
+                )
+            # A real caller *listens* to the read-back. If the bot repeats a
+            # time that is not the one requested — which is exactly what happens
+            # when speech recognition mangles it under noise — the caller says
+            # no and restates, instead of blindly confirming.
+            mismatch = self._confirmation_mismatch(last_bot_message or "")
+            if mismatch is not None:
+                self._misconfirmations += 1
+                if self._misconfirmations > 2:
+                    self.finished = True
+                    return SimulatorTurn(
+                        text="Das klappt so nicht, ich rufe später noch einmal an.",
+                        finished=True,
+                    )
+                return SimulatorTurn(
+                    text=self._flavour(
+                        f"Nein, das ist nicht richtig — ich möchte {mismatch}."
                     )
                 )
             self._phase = "closing"
@@ -179,10 +210,12 @@ class HeuristicSimulator(UserSimulator):
             if correction and correction.get("mistaken_time"):
                 self._phase = "await_correct"
                 mistaken = correction["mistaken_time"]
+                self._requested_time = mistaken
                 return self._flavour(
                     f"Guten Tag, ich möchte meinen Termin verschieben, und zwar auf {mistaken}."
                 )
             self._phase = "await_confirm"
+            self._requested_time = desired
             return self._flavour(
                 f"Guten Tag, ich möchte meinen Termin verschieben, und zwar auf {desired}."
             )
@@ -191,6 +224,7 @@ class HeuristicSimulator(UserSimulator):
             return self._flavour("Guten Tag, ich möchte meinen Termin absagen.")
         if goal_type in ("book_appointment", "create_appointment"):
             self._phase = "await_confirm"
+            self._requested_time = desired
             return self._flavour(
                 f"Guten Tag, ich möchte einen neuen Termin vereinbaren, am {desired}."
             )
@@ -205,6 +239,20 @@ class HeuristicSimulator(UserSimulator):
         if self.goal.type == "cancel_appointment":
             return self._flavour("Ich möchte meinen Termin absagen.")
         return self._flavour("Können Sie mir bitte weiterhelfen?")
+
+    def _confirmation_mismatch(self, bot_message: str) -> str | None:
+        """Return the desired time when the bot's read-back states a different one.
+
+        ``None`` means the read-back is acceptable (either it matches, or it
+        quotes no time at all — e.g. a cancellation confirmation).
+        """
+        wanted = self._requested_time or self._desired_time()
+        if not wanted:
+            return None
+        quoted = _ISO_RE.findall(bot_message)
+        if not quoted:
+            return None
+        return None if any(q == wanted for q in quoted) else wanted
 
     def _confirm_phrase(self) -> str:
         if self.persona.verbosity == "short":

@@ -64,6 +64,17 @@ def _load_personas(personas_dir: str):
     return load_personas(root) if root.exists() else {}
 
 
+def _voice_config(args):
+    """Suite-wide voice config from CLI flags (scenario ``audio:`` still wins)."""
+    profile = getattr(args, "audio_profile", None)
+    transport = getattr(args, "transport", None)
+    if not profile and not transport:
+        return None
+    from .runner.voice import VoiceConfig
+
+    return VoiceConfig(profile=profile or "clean", transport=transport or "loopback")
+
+
 async def _run_summary(args, scenarios, bot) -> RunSummary:
     personas = _load_personas(args.personas_dir)
     seeds = args.seeds or list(range(args.iterations))
@@ -74,7 +85,12 @@ async def _run_summary(args, scenarios, bot) -> RunSummary:
         modes=args.modes,
         bot_version=bot.version,
     )
-    engine = RunEngine(bot, personas=personas, concurrency=args.concurrency)
+    engine = RunEngine(
+        bot,
+        personas=personas,
+        concurrency=args.concurrency,
+        voice_config=_voice_config(args),
+    )
     results = await engine.run_cases(cases)
     return summarize(results, bot.version)
 
@@ -271,6 +287,111 @@ def cmd_list(args) -> int:
     return 0
 
 
+def cmd_voice(args) -> int:
+    """Run a suite as real voice calls, optionally sweeping noise profiles."""
+    scenarios = _load_suite(args.suite, args.scenarios_dir)
+    if not scenarios:
+        print(f"No scenarios found for suite {args.suite!r}", file=sys.stderr)
+        return 2
+    bot = build_bot(args.bot_version)
+    args.modes = ["voice"]
+    profiles = args.profiles or [args.audio_profile or "clean"]
+    failures = 0
+    for profile in profiles:
+        args.audio_profile = profile
+        summary = asyncio.run(_run_summary(args, scenarios, bot))
+        wers = [
+            r.voice.stt_wer
+            for r in summary.results
+            if r.voice and r.voice.stt_wer is not None
+        ]
+        mean_wer = sum(wers) / len(wers) if wers else 0.0
+        print(f"\n── audio profile: {profile} ──")
+        _print_summary(summary)
+        print(f"  mean WER={mean_wer:.2f}")
+        failures += summary.critical_failures + summary.errored
+    return 0 if failures == 0 else 1
+
+
+def cmd_discover(args) -> int:
+    """Explore beyond the written scenarios and report violations (§23)."""
+    from .discovery import DiscoveryEngine
+
+    seeds = _load_suite(args.suite, args.scenarios_dir) if args.suite else []
+    bot = build_bot(args.bot_version)
+    store = RegressionStore(args.capture_regressions) if args.capture_regressions else None
+    engine = DiscoveryEngine(
+        bot,
+        personas=_load_personas(args.personas_dir),
+        concurrency=args.concurrency,
+        store=store,
+    )
+    report = asyncio.run(
+        engine.discover(
+            seeds=seeds,
+            case_seeds=args.seeds or list(range(args.iterations)),
+            capture_regressions=bool(args.capture_regressions),
+            created_at=args.now,
+        )
+    )
+    print(f"\nDiscovery: explored {report.explored} generated case(s)")
+    print("-" * 78)
+    for finding in report.findings:
+        print(f"  [{finding.severity:8}] {finding.scenario_id}")
+        print(f"             {finding.title[:88]}")
+    print("-" * 78)
+    print(f"  {report.violations} violation(s) found")
+    if report.regression_case_ids:
+        print(f"  captured {len(report.regression_case_ids)} regression case(s)")
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps(report.to_report(), indent=2, ensure_ascii=False), "utf-8"
+        )
+    return 0 if report.violations == 0 else 1
+
+
+def cmd_promptfoo(args) -> int:
+    """Generate a promptfoo red-team config, or import its results (§22/§30)."""
+    from .integrations import findings_from_promptfoo, write_promptfoo_config
+
+    if args.import_results:
+        findings = findings_from_promptfoo(
+            args.import_results, bot_version=args.bot_version, created_at=args.now
+        )
+        print(f"Imported {len(findings)} finding(s) from {args.import_results}")
+        for f in findings:
+            print(f"  [{f.severity}] {f.title[:80]} — {', '.join(f.failed_assertions)}")
+        if args.json:
+            Path(args.json).write_text(
+                json.dumps([f.model_dump(mode="json") for f in findings], indent=2, ensure_ascii=False),
+                "utf-8",
+            )
+        return 0 if not findings else 1
+
+    built = write_promptfoo_config(args.out)
+    print(f"Wrote {built.paths['config']}")
+    print(f"Wrote {built.paths['provider']}")
+    print("\nRun the red-team suite with:")
+    print(f"  npx promptfoo@latest redteam run -c {built.paths['config']} -o results.json")
+    print(f"  phonebot-qa promptfoo --import-results results.json")
+    return 0
+
+
+def cmd_ingest(args) -> int:
+    """Turn a production call trace into a regression case (§35)."""
+    from .production import ProductionTrace, regression_case_from_trace
+
+    trace = ProductionTrace.from_file(args.trace)
+    case = regression_case_from_trace(trace)
+    store = RegressionStore(args.store)
+    store.save(case)
+    print(f"Created regression case {case.id}")
+    print(f"  scenario: {case.scenario['id']}")
+    print(f"  stored in: {args.store}")
+    print(f"\nReplay it with:\n  phonebot-qa replay --store {args.store}")
+    return 0
+
+
 def cmd_serve(args) -> int:
     try:
         import uvicorn
@@ -335,6 +456,42 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--suite", default="all")
     p_list.add_argument("--scenarios-dir", default="scenarios")
     p_list.set_defaults(func=cmd_list)
+
+    p_voice = sub.add_parser("voice", help="run a suite as real voice calls (phase 3)")
+    p_voice.add_argument("--suite", default="voice", help="suite to run in voice mode")
+    p_voice.add_argument("--bot-version", default="reference-1.0")
+    p_voice.add_argument(
+        "--profiles",
+        nargs="*",
+        default=None,
+        help="sweep these audio profiles (clean street car restaurant bad_connection ...)",
+    )
+    p_voice.add_argument("--audio-profile", default=None, help="single audio profile")
+    p_voice.add_argument("--transport", default=None, choices=["loopback", "sip", "webrtc"])
+    p_voice.add_argument("--junit", default=None)
+    p_voice.add_argument("--capture-regressions", default=None)
+    _add_run_opts(p_voice)
+    p_voice.set_defaults(func=cmd_voice)
+
+    p_disc = sub.add_parser("discover", help="automatic test discovery (§23)")
+    p_disc.add_argument("--suite", default="all", help="seed scenarios to mutate ('' for rules only)")
+    p_disc.add_argument("--bot-version", default="reference-1.0")
+    p_disc.add_argument("--capture-regressions", default=None)
+    _add_run_opts(p_disc)
+    p_disc.set_defaults(func=cmd_discover)
+
+    p_pf = sub.add_parser("promptfoo", help="generate/import promptfoo red-team runs (§22)")
+    p_pf.add_argument("--out", default="promptfoo", help="directory for the generated config")
+    p_pf.add_argument("--import-results", default=None, help="promptfoo results JSON to import")
+    p_pf.add_argument("--bot-version", default="reference-1.0")
+    p_pf.add_argument("--json", default=None)
+    p_pf.add_argument("--now", default=None)
+    p_pf.set_defaults(func=cmd_promptfoo)
+
+    p_ing = sub.add_parser("ingest", help="production call trace -> regression case (§35)")
+    p_ing.add_argument("trace", help="path to the production trace JSON")
+    p_ing.add_argument("--store", default="scenarios/regression/cases")
+    p_ing.set_defaults(func=cmd_ingest)
 
     p_serve = sub.add_parser("serve", help="run the orchestrator API")
     p_serve.add_argument("--host", default="127.0.0.1")

@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 
 from ..models import CaseResult, LatencyMetrics
-from .assertions import evaluate_assertions
+from .assertions import evaluate_assertions, voice_assertions
 from .judge import HeuristicJudge, Judge
 from .scoring import DEFAULT_WEIGHTS, ScoreWeights, compute_score, first_critical_failure
 from .voice import VoiceEvaluator
@@ -80,7 +80,14 @@ class EvaluationPipeline:
         )
 
         # 6. Voice metrics (None in text mode).
-        voice = self.voice.evaluate(artifacts.events, mode=mode)
+        voice = self.voice.evaluate(
+            artifacts.events,
+            mode=mode,
+            artifacts_metadata=getattr(artifacts, "metadata", None),
+        )
+        if voice is not None:
+            # Voice SLAs are deterministic assertions too (barge-in, WER).
+            assertions.extend(voice_assertions(scenario, voice))
 
         score = compute_score(
             assertions,

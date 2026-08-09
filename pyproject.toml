@@ -22,6 +22,16 @@ llm = [
     # Kept optional so the platform runs deterministically with no API keys.
     "anthropic>=0.40",
 ]
+db = [
+    # Durable run/case/finding storage (concept §25). SQLite by default,
+    # Postgres via PHONEBOT_DATABASE_URL.
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1; platform_system != 'Windows'",
+]
+deepeval = [
+    # Optional LLM-as-a-judge backend behind the Judge interface (concept §30).
+    "deepeval>=1.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

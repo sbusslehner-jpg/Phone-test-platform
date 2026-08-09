@@ -9,7 +9,6 @@ evaluation pipeline, then aggregates a :class:`RunSummary`.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 
 from ..adapters.bot.base import BotAdapter
@@ -26,8 +25,10 @@ from .generator import TestCase, generate_cases
 
 
 def _default_simulator(scenario: Scenario, knowledge, seed: int) -> UserSimulator:
-    if "redteam" in scenario.tags:
-        lines = scenario.user.user_visible.get("redteam_lines", [])
+    # Any scenario that ships an explicit script (red-team attacks, discovery
+    # probes) is played verbatim; everything else gets the goal-driven caller.
+    lines = scenario.user.user_visible.get("redteam_lines")
+    if lines:
         return ScriptedSimulator(knowledge, lines=list(lines), seed=seed)
     return HeuristicSimulator(knowledge, seed=seed)
 
@@ -127,6 +128,8 @@ class RunEngine:
         runner_config: RunnerConfig | None = None,
         concurrency: int = 8,
         simulator_factory=_default_simulator,
+        queue=None,
+        voice_config=None,
     ) -> None:
         self.bot = bot or ReferenceAppointmentBot()
         self.pipeline = pipeline or EvaluationPipeline()
@@ -134,12 +137,35 @@ class RunEngine:
         self.runner_config = runner_config or RunnerConfig()
         self.concurrency = concurrency
         self.simulator_factory = simulator_factory
+        # Distribution backend (concept §31). Defaults to in-process asyncio;
+        # swap for CeleryQueue/DramatiqQueue to fan out across workers.
+        from .workers import InProcessQueue
+
+        self.queue = queue or InProcessQueue(concurrency)
+        # Voice-mode configuration (concept §12.2/§34); None => text only.
+        self.voice_config = voice_config
+
+    def _build_runner(self, case: TestCase):
+        """Text or voice runner depending on the case's mode (concept §12)."""
+        if case.mode != "voice":
+            return ConversationRunner(self.bot, config=self.runner_config)
+        from ..runner.voice import VoiceConfig, VoiceConversationRunner
+
+        # Start from the scenario's own ``audio:`` block, then let an explicit
+        # engine-level config (a CLI noise sweep) override the profile/transport.
+        # Scenario-specific semantics like barge-in are always preserved.
+        config = VoiceConfig.from_scenario(case.scenario)
+        override = self.voice_config
+        if override is not None:
+            config.profile = override.profile
+            config.transport = override.transport
+        return VoiceConversationRunner(self.bot, config=config)
 
     async def run_case(self, case: TestCase) -> CaseResult:
         persona = resolve_persona(case.persona_id, self.personas)
         knowledge = isolate_user_knowledge(case.scenario, persona)
         simulator = self.simulator_factory(case.scenario, knowledge, case.seed)
-        runner = ConversationRunner(self.bot, config=self.runner_config)
+        runner = self._build_runner(case)
         artifacts = await runner.run(
             scenario=case.scenario, simulator=simulator, seed=case.seed
         )
@@ -154,14 +180,8 @@ class RunEngine:
         )
 
     async def run_cases(self, cases: list[TestCase]) -> list[CaseResult]:
-        sem = asyncio.Semaphore(self.concurrency)
-
-        async def _guarded(case: TestCase) -> CaseResult:
-            async with sem:
-                return await self.run_case(case)
-
-        # Preserve input order in the output for stable reports.
-        return await asyncio.gather(*(_guarded(c) for c in cases))
+        """Run every case through the configured queue, preserving input order."""
+        return await self.queue.map(cases, self.run_case)
 
 
 async def run_suite(

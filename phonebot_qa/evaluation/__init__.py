@@ -8,7 +8,7 @@ deterministic failure (sections 27 & 37).
 
 from __future__ import annotations
 
-from .assertions import evaluate_assertions
+from .assertions import evaluate_assertions, voice_assertions
 from .judge import HeuristicJudge, Judge
 from .pipeline import EvaluationPipeline, evaluate
 from .scoring import DEFAULT_WEIGHTS, ScoreWeights, compute_score
@@ -24,4 +24,5 @@ __all__ = [
     "compute_score",
     "evaluate",
     "evaluate_assertions",
+    "voice_assertions",
 ]

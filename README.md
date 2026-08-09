@@ -21,33 +21,54 @@ technical error handled correctly?*
 
 ---
 
-## What's in the box (MVP — concept §32)
+## What's in the box
 
-This is a complete, runnable **Phase-1 MVP** plus much of the cheap-to-add
-Phase-2 scaffolding. Everything runs with **no API keys and no external
-services**: the platform ships an in-process reference phonebot as the system
-under test, and the LLM pieces (user simulator, judge) have deterministic
-fallbacks behind swappable interfaces.
+**All 37 concept sections are implemented** — Phase 1 (MVP), Phase 2 and
+Phase 3. Everything runs with **no API keys, no brokers and no audio hardware**:
+the platform ships an in-process reference phonebot as the system under test,
+and every external piece (LLM simulator, judge, TTS, STT, telephony, broker,
+database) sits behind a swappable interface with a deterministic default.
+
+**Phase 1 — the core loop (§32)**
 
 | Capability | Module | Concept § |
 |---|---|---|
 | Scenario engine (YAML, source of truth) | `phonebot_qa/scenario/` | 5, 10 |
 | Knowledge isolation (no evaluation leakage) | `scenario/knowledge.py` | 10 |
 | User simulator (scripted / heuristic / LLM) | `phonebot_qa/simulator/` | 8, 9 |
-| Conversation runner | `phonebot_qa/runner/` | 7 |
+| Conversation runner | `phonebot_qa/runner/conversation.py` | 7 |
 | Bot adapter (REST + in-process reference) | `phonebot_qa/adapters/bot/` | 11 |
-| Mock backend + world state | `phonebot_qa/backend/world.py` | 15 |
-| Tool proxy (logging) | `phonebot_qa/backend/proxy.py` | 16 |
-| Fault injection | `phonebot_qa/backend/faults.py` | 17 |
+| Mock backend, tool proxy, fault injection | `phonebot_qa/backend/` | 15–17 |
 | Structured event log + logical clock | `phonebot_qa/observability/` | 16, 18 |
-| Deterministic assertions | `phonebot_qa/evaluation/assertions.py` | 20 |
-| LLM-as-a-judge (abstracted) | `phonebot_qa/evaluation/judge.py` | 21 |
-| Weighted scoring + critical override | `phonebot_qa/evaluation/scoring.py` | 27 |
-| Red teaming | `phonebot_qa/redteam/` | 22 |
+| Deterministic assertions | `evaluation/assertions.py` | 20 |
+| LLM-as-a-judge (abstracted) | `evaluation/judge.py` | 21 |
+| Weighted scoring + critical override | `evaluation/scoring.py` | 27 |
+| Orchestrator, CI release gate, API, CLI | `phonebot_qa/orchestrator/`, `cli.py` | 6, 28, 29 |
+
+**Phase 2 — the growing suite (§33)**
+
+| Capability | Module | Concept § |
+|---|---|---|
+| Red teaming (built-in attacks) | `phonebot_qa/redteam/` | 22 |
+| **Promptfoo integration** (config out, findings in) | `integrations/promptfoo.py` | 22, 30 |
+| **DeepEval judge** behind the `Judge` interface | `integrations/deepeval.py` | 21, 30 |
+| **Automatic test discovery** (rules + variants → findings) | `phonebot_qa/discovery/` | 23 |
 | Regression store (capture + replay) | `phonebot_qa/regression/` | 24 |
-| Orchestrator (case generation + engine) | `phonebot_qa/orchestrator/` | 6 |
-| CI release gate | `phonebot_qa/orchestrator/gate.py` | 29 |
-| FastAPI API + CLI | `orchestrator/api.py`, `cli.py` | 6, 28 |
+| **Production call → regression case** | `phonebot_qa/production/` | 35 |
+| **Persistence** (all 16 tables, SQLite/Postgres) | `phonebot_qa/persistence/` | 25, 31 |
+| **Worker/queue layer** (Celery/Dramatiq) | `orchestrator/workers.py` | 31 |
+
+**Phase 3 — voice end-to-end (§34)**
+
+| Capability | Module | Concept § |
+|---|---|---|
+| **TTS / STT engines** (interfaces + deterministic simulators) | `audio/tts.py`, `audio/stt.py` | 12.2, 34 |
+| **Audio chaos layer** (SNR, noise, speed, volume, packet loss) | `audio/chaos.py` | 13 |
+| **11 named noise profiles** (street, car, restaurant, …) | `audio/profiles.py` | 13 |
+| **Barge-in testing** + 300 ms SLA | `audio/bargein.py` | 14 |
+| **SIP / WebRTC / loopback transports** | `adapters/transport/` | 11, 34 |
+| **Voice runner** — the same scenarios as real calls | `runner/voice.py` | 12.2 |
+| **Voice metrics**: WER, barge-in, latency decomposition | `evaluation/voice.py` | 14, 18 |
 
 See [`docs/CONCEPT_MAPPING.md`](docs/CONCEPT_MAPPING.md) for a section-by-section
 map, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data flow.
@@ -126,6 +147,89 @@ The gate exits non-zero when it blocks, so it drops straight into CI. Add
 phonebot-qa redteam        # prompt injection, authz bypass, PII probes, ...
 ```
 
+Promptfoo runs the same attack vectors as an external red-team engine, and its
+findings flow back into the regression pipeline:
+
+```bash
+phonebot-qa promptfoo --out promptfoo/          # generate config + provider bridge
+npx promptfoo@latest redteam run -c promptfoo/promptfooconfig.yaml -o results.json
+phonebot-qa promptfoo --import-results results.json
+```
+
+### Automatic test discovery (concept §23)
+
+Discovery goes beyond the written scenarios: it probes the declared business
+rules and mutates each seed scenario along axes that break real bots — including
+auto-generating a *backend-fault* variant of every happy path.
+
+```bash
+phonebot-qa discover --suite booking --capture-regressions scenarios/regression/cases
+```
+
+```
+Discovery: explored 30 generated case(s)
+------------------------------------------------------------------------------
+  [critical] move_appointment_001__write_fault
+             safety:no_false_success: bot reported success although the backend …
+  [critical] book_appointment_001__write_fault
+             safety:no_false_success: bot reported success although the backend …
+------------------------------------------------------------------------------
+  5 violation(s) found
+  captured 5 regression case(s)
+```
+
+A healthy bot reports **0 violations** across the same 30 generated cases.
+
+### Voice end-to-end (concept §12.2, §13, §14, §34)
+
+The *same* scenarios run as real phone calls — TTS → noise → SIP/WebRTC → the
+bot's STT — and the *same* business assertions decide PASS/FAIL:
+
+```bash
+phonebot-qa voice --suite voice
+phonebot-qa voice --suite booking --profiles clean street car restaurant   # noise sweep
+```
+
+A noise sweep is the point: it turns "is the bot robust?" into a number.
+
+| profile | passed | mean WER | avg turns |
+|---|---|---|---|
+| clean | 12/12 | 0.00 | 2.0 |
+| office | 12/12 | 0.06 | 2.0 |
+| street | 12/12 | 0.22 | 2.4 |
+| car | 12/12 | 0.25 | 2.3 |
+| restaurant | 8/12 | 0.47 | 2.8 |
+| station | 9/12 | 0.52 | 3.3 |
+
+Under moderate noise the bot recovers (turn count rises as the caller corrects a
+misheard read-back); under heavy noise calls genuinely fail. Barge-in is a
+first-class, *critical* assertion (concept §14):
+
+```yaml
+audio:
+  profile: clean
+  transport: webrtc
+  barge_in: { interrupt_after_ms: 850 }
+  barge_in_sla_ms: 300
+```
+
+```
+voice: {barge_in_detected: true, stop_latency_ms: 180, user_audio_lost_ms: 180}
+```
+
+A bot that talks over its caller, or detects the interruption too late, fails.
+
+### Production failure → regression case (concept §35)
+
+```bash
+phonebot-qa ingest production_call.json --store scenarios/regression/cases
+phonebot-qa replay --store scenarios/regression/cases
+```
+
+The trace's pre-call backend state becomes the scenario's `initial_state` and the
+caller's real utterances become the script, so the bug reproduces exactly and is
+then guarded forever.
+
 ### Orchestrator API (concept §6)
 
 ```bash
@@ -201,18 +305,28 @@ is the scenarios, business rules and regression cases, not any single library):
 ## Development
 
 ```bash
-pip install -e ".[api,dev]"
-pytest -q            # 41 tests, ~0.7s, fully deterministic, no network
+pip install -e ".[api,db,dev]"
+pytest -q            # 98 tests, ~16s, fully deterministic, no network
 ```
 
-## Roadmap
+Optional extras: `api` (FastAPI + httpx), `db` (SQLAlchemy/Postgres persistence),
+`deepeval` (LLM judge), `llm` (Anthropic provider for the LLM simulator).
 
-- **Phase 1 (this MVP, §32):** scenarios → simulate → run → mock backend →
-  tool/event logging → assertions → judge → report. ✅
-- **Phase 2 (§33):** Promptfoo red teaming integration, richer fault injection,
-  persistent regression management, CI release gates, Postgres/worker layer.
-- **Phase 3 (§34):** TTS → audio chaos → SIP/WebRTC → voice metrics, running the
-  same text scenarios as real phone calls.
+## Status
+
+- **Phase 1 (§32)** — scenarios → simulate → run → mock backend → tool/event
+  logging → assertions → judge → report. ✅
+- **Phase 2 (§33)** — Promptfoo red teaming, fault injection, automatic test
+  discovery, regression management, CI release gates, persistence, workers. ✅
+- **Phase 3 (§34)** — TTS → audio chaos → SIP/WebRTC → voice metrics, running
+  the same text scenarios as real phone calls. ✅
+
+All 37 concept sections are implemented — see
+[`docs/CONCEPT_MAPPING.md`](docs/CONCEPT_MAPPING.md).
+
+Natural next steps beyond the concept: swapping the simulated TTS/STT for real
+engines (the interfaces are already in place), a Grafana/Next.js dashboard over
+the persisted results, and OpenTelemetry export of the event trace.
 
 ## License
 

@@ -1,0 +1,52 @@
+# Voice end-to-end test under street noise (concept §12.2 & §13).
+#
+# Identical business contract to move_appointment_001 — the *same* assertions
+# decide PASS/FAIL — but executed as a real call: TTS -> street noise -> SIP ->
+# the bot's STT. This is what proves the bot still books the right slot when the
+# caller is standing on a pavement.
+id: voice_move_noisy_001
+description: >
+  Kunde verschiebt seinen Termin — als echter Telefonanruf mit Straßenlärm.
+tags: [voice, booking, noise]
+
+initial_state:
+  session_customer_id: customer_v1
+  customers:
+    - id: customer_v1
+      name: Vera Voice
+  appointments:
+    - id: apt_v1
+      customer_id: customer_v1
+      datetime: "2026-08-12T14:00:00+02:00"
+
+# Voice-mode configuration (ignored entirely in text mode, so this scenario
+# can also be run as a fast text test).
+audio:
+  profile: street          # SNR 10 dB, pink noise
+  transport: sip           # G.711 narrowband, PSTN latency + jitter
+  max_wer: 0.45            # recognition budget for this profile
+
+user:
+  goal:
+    type: move_appointment
+    target_datetime: "2026-08-14T10:00:00+02:00"
+  persona: normal
+  user_visible:
+    desired_time: "2026-08-14T10:00:00+02:00"
+
+expected:
+  database:
+    appointments.apt_v1:
+      datetime: "2026-08-14T10:00:00+02:00"
+  required_events:
+    - availability_checked
+    - confirmation_requested
+    - confirmation_received
+    - appointment_updated
+  forbidden_events:
+    - appointment_created
+
+limits:
+  max_turns: 15
+  # A voice call is far longer than a text run: speech playback is real time.
+  max_duration_seconds: 300

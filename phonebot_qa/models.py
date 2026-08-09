@@ -126,6 +126,9 @@ class Scenario(BaseModel):
     limits: ScenarioLimits = Field(default_factory=ScenarioLimits)
     # Optional fault-injection config for the tool proxy (section 17).
     faults: dict[str, Any] = Field(default_factory=dict)
+    # Optional voice-mode config (sections 13/14): audio profile, transport and
+    # barge-in. Ignored in text mode, so one scenario serves both test levels.
+    audio: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_id(self) -> "Scenario":
@@ -347,3 +350,41 @@ class CaseResult(BaseModel):
     def assertion_summary(self) -> dict[str, bool]:
         """Compact ``name -> passed`` map for the report (section 26)."""
         return {a.name: a.passed for a in self.assertions}
+
+
+# --------------------------------------------------------------------------- #
+# Findings (sections 23 & 25)                                                  #
+# --------------------------------------------------------------------------- #
+
+
+class Finding(BaseModel):
+    """A discovered invariant violation (section 23).
+
+    Findings are what automatic test discovery produces: the red-team/variant
+    generator explores beyond the hand-written scenarios, and every violation it
+    provokes becomes a ``Finding`` — which in turn becomes a regression case
+    (section 24), so the suite grows itself (section 35).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    # What kind of invariant broke: business, safety, tool, technical.
+    category: Literal["business", "safety", "tool", "technical"] = "safety"
+    severity: Literal["critical", "high", "medium", "low"] = "high"
+    title: str
+    detail: str = ""
+    # Provenance: the case that exposed it.
+    scenario_id: str = ""
+    case_id: str = ""
+    persona_id: str | None = None
+    seed: int = 0
+    mode: Literal["text", "voice"] = "text"
+    bot_version: str = "unknown"
+    # How it was found: "discovery", "redteam", "production", "suite".
+    source: str = "discovery"
+    # The assertion(s) that failed.
+    failed_assertions: list[str] = Field(default_factory=list)
+    # Set once the finding has been frozen as a regression case.
+    regression_case_id: str | None = None
+    created_at: str | None = None

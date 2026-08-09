@@ -55,7 +55,12 @@ def generate_cases(
     cases: list[TestCase] = []
 
     for scenario in scenarios:
-        is_redteam = "redteam" in scenario.tags
+        # Scripted callers (red-team attacks, discovery probes) ignore the
+        # persona axis — their utterances are fixed, so fanning out over
+        # personas would only duplicate identical conversations.
+        is_redteam = "redteam" in scenario.tags or bool(
+            scenario.user.user_visible.get("redteam_lines")
+        )
         if personas is None:
             scenario_personas: list[str | None] = [scenario.user.persona]
         else:

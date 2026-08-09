@@ -17,12 +17,14 @@ from .models import (
     EvalScores,
     Event,
     EventType,
+    Finding,
     Persona,
     Scenario,
     ScoreBreakdown,
     ToolCall,
     Turn,
     UserGoal,
+    VoiceMetrics,
 )
 from .scenario.loader import load_scenario, load_scenarios
 
@@ -33,12 +35,14 @@ __all__ = [
     "EvalScores",
     "Event",
     "EventType",
+    "Finding",
     "Persona",
     "Scenario",
     "ScoreBreakdown",
     "ToolCall",
     "Turn",
     "UserGoal",
+    "VoiceMetrics",
     "load_scenario",
     "load_scenarios",
 ]
