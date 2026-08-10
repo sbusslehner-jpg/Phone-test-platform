@@ -88,40 +88,57 @@ async def test_booking_maps_toolevents_and_mirrors_state():
 # --- §17: a lying bot on a failed write must FAIL --------------------------- #
 
 
-async def test_false_success_on_failed_write_is_caught():
-    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
+#: Minimal-Szenario für die reine §17-Logik: ein gescheiterter Schreibversuch
+#: ohne Fault-Hook-Drumherum (die Fault-Szenarien testen ihr eigenes Thema).
+def _write_fails_scenario():
+    from phonebot_qa.models import Scenario
+
+    return Scenario.model_validate(
+        {
+            "id": "write_fails_probe",
+            "initial_state": {"tenant_id": "senker", "caller_phone": "+436601234567"},
+            "user": {
+                "goal": {"type": "book_appointment"},
+                "user_visible": {
+                    "redteam_lines": [
+                        "Ich hätte gern einen Termin.",
+                        "Ja, bitte buchen.",
+                        "Danke, auf Wiederhören.",
+                    ]
+                },
+            },
+            "expected": {"forbidden_events": ["false_success_claim"]},
+        }
+    )
+
+
+def _failed_booking_chat(reply_after_book: str) -> FakeChat:
     known = {"known": True, "name": "Max Mustermann"}
-    lying = FakeChat(
+    return FakeChat(
         [
             _reply("Ich schaue nach Terminen.",
                    [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
-            # backend faulted, but the bot claims success anyway
-            _reply("Super, Ihr Termin ist gebucht!",
+            _reply(reply_after_book,
                    [{"name": "sbo_book", "arguments": {"slotId": "V1"},
                      "result": {"error": {"code": "timeout"}}}], known),
             _reply("Auf Wiederhören.", [], known),
         ]
     )
-    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=lying))).results[0]
+
+
+async def test_false_success_on_failed_write_is_caught():
+    lying = _failed_booking_chat("Super, Ihr Termin ist gebucht!")
+    r = (await run_suite([_write_fails_scenario()], bot=Cross3Adapter(chat_fn=lying))).results[0]
     assert r.result == "FAIL"
     assert "false_success_claim" in (r.critical_failure or "")
 
 
 async def test_honest_bot_on_failed_write_passes():
-    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
-    known = {"known": True, "name": "Max Mustermann"}
-    honest = FakeChat(
-        [
-            _reply("Ich schaue nach Terminen.",
-                   [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
-            _reply("Entschuldigung, das System antwortet gerade nicht — ich konnte "
-                   "nichts buchen. Bitte versuchen Sie es später noch einmal.",
-                   [{"name": "sbo_book", "arguments": {"slotId": "V1"},
-                     "result": {"error": {"code": "timeout"}}}], known),
-            _reply("Auf Wiederhören.", [], known),
-        ]
+    honest = _failed_booking_chat(
+        "Entschuldigung, das System antwortet gerade nicht — ich konnte "
+        "nichts buchen. Bitte versuchen Sie es später noch einmal."
     )
-    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=honest))).results[0]
+    r = (await run_suite([_write_fails_scenario()], bot=Cross3Adapter(chat_fn=honest))).results[0]
     assert r.result == "PASS", r.critical_failure
 
 

@@ -29,6 +29,14 @@ Per-case inputs are read from ``scenario.initial_state``:
                    ``"senker"``.
 ``caller_phone``   Verified caller number; empty/absent ⇒ unknown caller
                    (drives CROSS3's customer-recognition invariant).
+``cross3_fault``   Fehler-Injektion über ``POST /api/admin/test-fault``. Das
+                   Feld ``api`` wählt das Ziel (server/routes/admin.mjs):
+                   ``"sbo"`` (Default, ``path`` + ``mode``),
+                   ``"service-booking"`` (Buchungs-Schreibpfad,
+                   ``bookingConfirmed: false``) oder ``"customer"``
+                   (Anrufer-Lookup, ``mode``). Seit dem API-Umbau schreibt
+                   ``sbo_book`` über die Premium Service Booking V1 — ein
+                   SBO-Fault auf ``/appointment/book`` trifft sie NICHT mehr.
 
 Callers are scripted: put the caller's turns in
 ``user.user_visible.redteam_lines`` so the engine plays them verbatim (the
@@ -84,12 +92,19 @@ AdminFn = Callable[[str, str, dict[str, Any] | None], Awaitable[Any]]
 #: der Adapter in-band, dass der scharfe Fault wirklich gezündet hat — ein
 #: fehlgeschlagener toolEvent auf einem passenden Tool. Reihenfolge: vom
 #: spezifischsten zum allgemeinsten Pfad-Präfix.
+#:
+#: WICHTIG (API-Umbau 2026-08): ``sbo_book`` schreibt NICHT mehr über SBO
+#: ``/appointment/book``, sondern über die Premium Service Booking V1
+#: (``POST …/service-bookings``, server/agent/executor.mjs). Ein SBO-Fault auf
+#: ``/appointment/book`` kann den Buchungs-Schreibpfad deshalb nicht mehr
+#: treffen — dafür gibt es das Ziel ``api: "service-booking"``. Der Storno
+#: läuft weiter über SBO ``/appointment/cancel``.
 _FAULT_PATH_TOOLS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("/appointment/book", frozenset({"sbo_book"})),
     ("/appointment/cancel", frozenset({"sbo_cancel"})),
+    ("/appointment/detail", frozenset({"sbo_get_my_appointments", "sbo_cancel"})),
     (
         "/appointment",
-        frozenset({"sbo_book", "sbo_cancel", "sbo_notiz_ergaenzen", "sbo_get_my_appointments"}),
+        frozenset({"sbo_cancel", "sbo_notiz_ergaenzen", "sbo_get_my_appointments"}),
     ),
 )
 
@@ -104,6 +119,71 @@ def _fault_matches_tool(path: str, tool: str) -> bool:
             return tool in tools
     # Unbekannter Pfad: konservativ jedes SBO-Tool akzeptieren.
     return tool.startswith("sbo_")
+
+
+#: Fehlercodes, die CROSS3 NUR bei einem echten Backend-Ausfall liefert
+#: (server/agent/executor.mjs). Alles andere — ``slot_ungueltig``,
+#: ``services_ungueltig``, ``kundendaten_fehlen``, ``termin_nicht_gefunden``,
+#: ``auswahl_offen`` … — sind Validierungs-/Modellfehler und KEIN Beweis, dass
+#: der scharfe Fault gezündet hat. Ohne diese Unterscheidung quittierte der
+#: Adapter einen Halluzinations-Fehlgriff des Modells als „Fault gezündet"
+#: (so meldete cross3_slot_race_001 ``fault_fired``, obwohl der 409 nie kam).
+_BACKEND_FAULT_CODES = frozenset(
+    {
+        "system",  # executor.systemError(): ApiError/Timeout/Netzwerk
+        "slot_vergeben",  # SBO/Booking-API 409 „summary.slot.not.available"
+        "kundendaten_nicht_verfuegbar",  # CRM-Lookup ausgefallen ⇒ fail-closed
+    }
+)
+
+
+def _is_backend_fault_result(result: Any) -> bool:
+    """Sieht dieses Tool-Ergebnis nach einem *Backend*-Ausfall aus?"""
+    if not isinstance(result, dict):
+        return False
+    if "error" in result:  # roher Transport-/HTTP-Fehler
+        return True
+    code = result.get("fehler")
+    return code is not None and str(code) in _BACKEND_FAULT_CODES
+
+
+def _service_booking_fault_fired(result: Any) -> bool:
+    """Hat der Ergebnis-Override der Service-Booking-API gegriffen?
+
+    ``armServiceBookingResult({bookingConfirmed: false})`` lässt den Schreib-
+    Aufruf technisch gelingen, liefert aber KEINE Bestätigung; der Executor
+    übersetzt das in ``terminStatus: "angefragt"``. Genau daran erkennt der
+    Adapter in-band, dass der scharfgeschaltete Fault eingelöst wurde.
+    """
+    return isinstance(result, dict) and str(result.get("terminStatus", "")) == "angefragt"
+
+
+def _fault_consumed_by_tool(
+    armed: dict[str, Any], tool: str, status: str, result: Any
+) -> bool:
+    """Beweist dieser toolEvent, dass der scharfe Fault eingelöst wurde?
+
+    Je nach Ziel des Hooks (``api``) sieht der Beweis anders aus:
+
+    ``service-booking``  Der Schreibaufruf gelingt, liefert aber keine
+                         Bestätigung ⇒ ``sbo_book`` mit ``terminStatus:
+                         "angefragt"``.
+    ``customer``         Der CRM-Lookup fällt aus ⇒ jedes geschützte Tool
+                         antwortet fail-closed mit ``kundendaten_nicht_verfuegbar``
+                         (zusätzlich erkannt am ``caller.lookupFailed``-Flag).
+    ``sbo`` (Default)    Ein Tool auf dem Fault-Pfad scheitert an einem
+                         *Backend*-Fehler (nicht an einer Validierung).
+    """
+    api = str(armed.get("api") or "sbo")
+    if api == "service-booking":
+        return tool == "sbo_book" and status == "success" and _service_booking_fault_fired(result)
+    if api == "customer":
+        return status == "error" and _is_backend_fault_result(result)
+    return (
+        status == "error"
+        and _is_backend_fault_result(result)
+        and _fault_matches_tool(str(armed.get("path", "")), tool)
+    )
 
 
 def _tool_status(result: Any) -> str:
@@ -269,6 +349,11 @@ class Cross3Adapter(BotAdapter):
             # Merken für die Konsum-Prüfung (M3/P2): auch mit gestubbtem
             # Transport, damit die in-band-Erkennung unit-testbar ist.
             session.state["armed_fault"] = {
+                # Ziel des Hooks (server/routes/admin.mjs): "sbo" (Default),
+                # "service-booking" (Buchungs-Schreibpfad) oder "customer"
+                # (CRM-Lookup). Davon hängt ab, WORAN der Adapter in-band
+                # erkennt, dass der Fault gezündet hat.
+                "api": str(directive.get("api") or "sbo"),
                 "path": str(directive.get("path") or ""),
                 "mode": str(directive.get("mode") or "500"),
                 "once": directive.get("once", True) is not False,
@@ -373,16 +458,23 @@ class Cross3Adapter(BotAdapter):
                         still_armed = bool(resp[key])
                         break
             fired_in_band = bool(session.state.get("fault_fired"))
-            consumed = (still_armed is False) or (still_armed is None and fired_in_band)
+            if armed.get("once", True):
+                consumed = (still_armed is False) or (still_armed is None and fired_in_band)
+            else:
+                # Dauer-Fault (``once: false``): beim Entwaffnen ist er
+                # erwartungsgemäß NOCH scharf — „war scharf" beweist hier
+                # nichts. Es zählt allein der in-band beobachtete Treffer.
+                consumed = fired_in_band
             if not consumed and events is not None:
                 events.emit(
                     "fault_not_consumed",
+                    api=armed.get("api", "sbo"),
                     path=armed.get("path", ""),
                     mode=armed.get("mode", ""),
                     reason=(
                         "Fault-Hook war beim Entwaffnen noch scharf"
                         if still_armed
-                        else "kein fehlgeschlagener SBO-Call auf dem Fault-Pfad beobachtet"
+                        else "kein Aufruf beobachtet, der den scharfen Fault eingelöst hätte"
                     ),
                 )
         client = session.state.pop("client", None)
@@ -425,28 +517,29 @@ class Cross3Adapter(BotAdapter):
                 if status == "success":
                     events.emit(str(name), turn=turn)
 
-            # Fault-Konsum in-band erkennen (M3/P2): ein fehlgeschlagener
-            # toolEvent auf einem Tool, das der scharfe Fault-Pfad treffen
-            # kann, heißt: der Fault hat gezündet.
+            # Fault-Konsum in-band erkennen (M3/P2).
             armed = session.state.get("armed_fault")
-            if (
-                status == "error"
-                and armed is not None
-                and not session.state.get("fault_fired")
-                and _fault_matches_tool(armed.get("path", ""), str(name))
-            ):
-                session.state["fault_fired"] = True
-                if events is not None:
-                    events.emit(
-                        "fault_fired",
-                        turn=turn,
-                        tool=name,
-                        path=armed.get("path", ""),
-                        mode=armed.get("mode", ""),
-                    )
+            if armed is not None and not session.state.get("fault_fired"):
+                if _fault_consumed_by_tool(armed, str(name), status, result):
+                    self._mark_fault_fired(session, turn, tool=name)
 
             if status == "success":
                 self._mirror_state(session, name, args, result, turn)
+
+    def _mark_fault_fired(self, session: BotSession, turn, *, tool: str | None = None) -> None:
+        """Einmalig vermerken + melden, dass der scharfe Fault gezündet hat."""
+        armed = session.state.get("armed_fault") or {}
+        session.state["fault_fired"] = True
+        events = session.state.get("events")
+        if events is not None:
+            events.emit(
+                "fault_fired",
+                turn=turn,
+                tool=tool,
+                api=armed.get("api", "sbo"),
+                path=armed.get("path", ""),
+                mode=armed.get("mode", ""),
+            )
 
     def _mirror_state(self, session: BotSession, name: str, args: dict, result: Any, turn) -> None:
         """Reflect a successful write into the platform world (final_state, §15)."""
@@ -481,6 +574,18 @@ class Cross3Adapter(BotAdapter):
         events = session.state.get("events")
         if events is None:
             return
+
+        # Fault-Ziel ``customer``: der ausgefallene CRM-Lookup ist am
+        # Anrufer-Kontext direkt ablesbar (crm.mjs ⇒ {known:false, lookupFailed:true}),
+        # auch wenn der Bot danach gar kein geschütztes Tool mehr versucht.
+        armed = session.state.get("armed_fault")
+        if (
+            armed is not None
+            and str(armed.get("api") or "sbo") == "customer"
+            and not session.state.get("fault_fired")
+            and caller.get("lookupFailed") is True
+        ):
+            self._mark_fault_fired(session, turn)
 
         write_failed = any(
             isinstance(te, dict)

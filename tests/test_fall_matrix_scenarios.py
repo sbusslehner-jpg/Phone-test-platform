@@ -82,21 +82,50 @@ def test_fault_scenarios_can_no_longer_pass_vacuously():
         "cross3_fault_book_timeout_001",
         "cross3_slot_race_001",
         "cross3_cancel_fault_mid_flow_001",
+        "cross3_lookup_failed_fail_closed_001",
     ):
-        s = scenarios[sid]
-        assert s.initial_state.get("cross3_fault"), sid
-        assert s.expected.fault_must_fire is True, sid
+        assert scenarios[sid].expected.fault_must_fire is True, sid
+    # Alle bis auf den bekannt-offenen Race schalten auch wirklich etwas scharf.
+    for sid in (
+        "cross3_fault_book_timeout_001",
+        "cross3_cancel_fault_mid_flow_001",
+        "cross3_lookup_failed_fail_closed_001",
+    ):
+        assert scenarios[sid].initial_state.get("cross3_fault"), sid
 
 
-def test_fault_paths_match_sbo_mock_routes():
-    scenarios = _load()
+def test_slot_race_is_marked_known_open_without_a_misleading_directive():
+    """Der 409 ist seit dem API-Umbau nicht scharfschaltbar (siehe Datei-Kopf).
+
+    Eine Direktive stehen zu lassen wäre schlimmer als keine: ein wirkungsloser
+    `service-booking`-Override gilt beim Entwaffnen als „konsumiert" und macht
+    den Case vakuum-grün.
+    """
+    s = _load()["cross3_slot_race_001"]
+    assert "known_open" in s.tags
+    assert not s.initial_state.get("cross3_fault")
+    assert s.expected.fault_must_fire is True
+
+
+def test_fault_directives_target_an_api_the_hook_knows():
+    """Ziele laut server/routes/admin.mjs — und der Buchungspfad ist NICHT SBO."""
     valid_modes = {"timeout", "500", "401", "409"}
-    for s in scenarios.values():
+    for s in _load().values():
         fault = s.initial_state.get("cross3_fault")
         if not fault:
             continue
-        assert fault["mode"] in valid_modes, s.id
-        assert fault["path"].startswith("/appointment/"), s.id
+        api = fault.get("api", "sbo")
+        assert api in {"sbo", "service-booking", "customer"}, s.id
+        if api == "sbo":
+            assert fault["mode"] in valid_modes, s.id
+            # Der Buchungs-Schreibpfad läuft über die Service-Booking-API —
+            # ein SBO-Fault dorthin zündet nie und macht den Case wertlos.
+            assert fault["path"].startswith("/appointment/"), s.id
+            assert "/appointment/book" not in fault["path"], s.id
+        elif api == "customer":
+            assert fault["mode"] in valid_modes, s.id
+        else:
+            assert fault.get("bookingConfirmed") is False, s.id
 
 
 def test_pii_canary_scenarios_seed_foreign_customers():

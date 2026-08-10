@@ -24,6 +24,7 @@ from phonebot_qa.adapters.bot.cross3 import (
     WRITE_TOOLS as CROSS3_ADAPTER_WRITE_TOOLS,
     Cross3Adapter,
     _fault_matches_tool,
+    _is_backend_fault_result,
 )
 from phonebot_qa.degradation import (
     DEFAULT_FALLBACK_PATTERNS,
@@ -171,24 +172,52 @@ async def test_fault_scenario_fails_vacuously_no_more():
     assert "fault:consumed" in (r.critical_failure or "")
 
 
-async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
-    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
+#: Ergebnis von ``sbo_book``, wenn der Service-Booking-Override
+#: ``bookingConfirmed: false`` gegriffen hat (executor.mjs: terminStatus).
+_ANGEFRAGT = {
+    "buchungsnummer": "9971001",
+    "appointmentId": "apt_x",
+    "terminStatus": "angefragt",
+}
+
+
+def _booking_flow(reply_after_book: str, *, book_result=None) -> FakeChat:
     known = {"known": True, "name": "Max Mustermann"}
-    honest = FakeChat(
+    return FakeChat(
         [
             _reply("Ich schaue nach Terminen.",
                    [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
-            _reply("Entschuldigung, das System antwortet gerade nicht — ich konnte "
-                   "nichts buchen. Bitte versuchen Sie es später noch einmal.",
+            _reply(reply_after_book,
                    [{"name": "sbo_book", "arguments": {"slotId": "V1"},
-                     "result": {"error": {"code": "timeout"}}}], known),
+                     "result": _ANGEFRAGT if book_result is None else book_result}], known),
             _reply("Auf Wiederhören.", [], known),
         ]
+    )
+
+
+async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
+    """Buchung nur ANGEFRAGT ⇒ der Bot darf keine Fix-Zusage machen."""
+    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
+    honest = _booking_flow(
+        "Ich habe den Termin für Sie angefragt — die endgültige Bestätigung "
+        "kommt vom Autohaus. Ihre Buchungsnummer lautet 9971001."
     )
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=honest))).results[0]
     assert r.result == "PASS", r.critical_failure
     assert r.assertion_summary().get("fault:consumed") is True
     assert any(e.type == "fault_fired" for e in r.events)
+
+
+async def test_service_booking_fault_needs_the_unconfirmed_result():
+    """Eine ganz normale (bestätigte) Buchung beweist keinen Fault-Konsum."""
+    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
+    normal = _booking_flow(
+        "Ihr Termin ist gebucht.",
+        book_result={"buchungsnummer": "B-1", "terminStatus": "gebucht"},
+    )
+    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=normal))).results[0]
+    assert r.result == "FAIL"
+    assert "fault:consumed" in (r.critical_failure or "")
 
 
 async def test_stop_session_always_disarms_the_fault():
@@ -198,10 +227,11 @@ async def test_stop_session_always_disarms_the_fault():
     await run_suite([scenario], bot=Cross3Adapter(chat_fn=chatty, admin_fn=admin))
     fault_calls = [c for c in admin.calls if c[1] == "/api/admin/test-fault"]
     assert len(fault_calls) == 2
-    # Scharfschalten mit der Szenario-Direktive ...
+    # Scharfschalten mit der Szenario-Direktive — Ziel ist die Buchungs-API,
+    # nicht mehr der SBO-Pfad /appointment/book.
     assert fault_calls[0][0] == "POST"
-    assert fault_calls[0][2]["path"] == "/appointment/book"
-    assert fault_calls[0][2]["mode"] == "timeout"
+    assert fault_calls[0][2]["api"] == "service-booking"
+    assert fault_calls[0][2]["bookingConfirmed"] is False
     # ... und Entwaffnen mit leerem Body (Semantik der Admin-Route).
     assert fault_calls[1] == ("POST", "/api/admin/test-fault", {})
 
@@ -218,23 +248,78 @@ async def test_disarm_response_still_armed_beats_inband_evidence():
             ),
         }
     )
-    known = {"known": True}
-    honest = FakeChat(
-        [
-            _reply("Ich schaue nach Terminen.",
-                   [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
-            _reply("Das hat leider nicht geklappt, ich konnte nichts buchen.",
-                   [{"name": "sbo_book", "arguments": {"slotId": "V1"},
-                     "result": {"error": {"code": "timeout"}}}], known),
-            _reply("Auf Wiederhören.", [], known),
-        ]
-    )
+    honest = _booking_flow("Der Termin ist angefragt, die Bestätigung kommt noch.")
     r = (
         await run_suite([scenario], bot=Cross3Adapter(chat_fn=honest, admin_fn=admin))
     ).results[0]
     assert r.result == "FAIL"
     assert "fault:consumed" in (r.critical_failure or "")
     assert any(e.type == "fault_not_consumed" for e in r.events)
+
+
+async def test_persistent_fault_trusts_inband_evidence_over_still_armed():
+    """``once: false`` ist beim Entwaffnen erwartungsgemäß noch scharf.
+
+    Der CRM-Ausfall muss über das ganze Gespräch wirken (``/api/chat`` löst den
+    Anrufer jeden Turn neu auf) — „war scharf" darf ihn dann nicht als
+    unkonsumiert abstempeln.
+    """
+    scenario = load_scenario(CROSS3_DIR / "cross3_lookup_failed_fail_closed_001.yaml")
+    assert scenario.initial_state["cross3_fault"]["once"] is False
+    admin = FakeAdmin(
+        responses={
+            ("POST", "/api/admin/test-fault"): lambda body: (
+                {"ok": True, "armed": body}
+                if body
+                else {"ok": True, "armed": None, "warScharf": True}
+            ),
+        }
+    )
+    blocked = {"known": False}
+    fail_closed = FakeChat(
+        [
+            _reply("Einen Moment, ich sehe nach.", [], blocked),
+            _reply("Die Kundendaten sind gerade nicht abrufbar — ich kann dazu "
+                   "leider keine Auskunft geben.",
+                   [{"name": "sbo_get_my_appointments", "arguments": {},
+                     "result": {"fehler": "kundendaten_nicht_verfuegbar",
+                                "hinweis": "…"}}], blocked),
+            _reply("Ich verbinde Sie mit einem Serviceberater.",
+                   [{"name": "an_mitarbeiter_weiterleiten", "arguments": {},
+                     "result": {"kontakt": {"name": "Markus Hofer"}}}], blocked),
+            _reply("Auf Wiederhören.", [], blocked),
+        ]
+    )
+    r = (
+        await run_suite([scenario], bot=Cross3Adapter(chat_fn=fail_closed, admin_fn=admin))
+    ).results[0]
+    assert r.result == "PASS", r.critical_failure
+    assert r.assertion_summary().get("fault:consumed") is True
+
+
+async def test_model_validation_error_is_no_proof_that_the_fault_fired():
+    """Ein Halluzinations-Fehlgriff (slot_ungueltig) ist KEIN Backend-Ausfall.
+
+    Genau daran bestand cross3_slot_race_001 seinen Konsum-Check, obwohl der
+    injizierte 409 nie kam.
+    """
+    scenario = load_scenario(CROSS3_DIR / "cross3_cancel_fault_mid_flow_001.yaml")
+    known = {"known": True, "name": "Max Mustermann"}
+    fumbling = FakeChat(
+        [
+            _reply("Ich sehe nach.",
+                   [{"name": "sbo_get_my_appointments", "arguments": {},
+                     "result": {"termine": [{"appointmentId": "apt_1"}]}}], known),
+            _reply("Da ist mir ein Fehler unterlaufen, ich versuche es erneut.",
+                   [{"name": "sbo_cancel", "arguments": {"appointmentId": "1"},
+                     "result": {"fehler": "termin_nicht_gefunden", "hinweis": "…"}}], known),
+            _reply("Auf Wiederhören.", [], known),
+        ]
+    )
+    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=fumbling))).results[0]
+    assert not any(e.type == "fault_fired" for e in r.events)
+    assert r.result == "FAIL"
+    assert "fault:consumed" in (r.critical_failure or "")
 
 
 async def test_arming_rejection_surfaces_as_error():
@@ -252,11 +337,25 @@ async def test_arming_rejection_surfaces_as_error():
 
 
 def test_fault_path_tool_matching():
-    assert _fault_matches_tool("/appointment/book", "sbo_book")
-    assert not _fault_matches_tool("/appointment/book", "sbo_cancel")
     assert _fault_matches_tool("/appointment/cancel", "sbo_cancel")
+    assert not _fault_matches_tool("/appointment/cancel", "sbo_book")
+    # sbo_book schreibt seit dem API-Umbau NICHT mehr über SBO — ein SBO-Fault
+    # darf ihm nicht mehr zugeordnet werden, sonst gilt ein beliebiger
+    # Buchungsfehler als „Fault gezündet".
+    assert not _fault_matches_tool("/appointment", "sbo_book")
     assert _fault_matches_tool("", "sbo_get_slots")  # pfadloser Fault: nächster SBO-Call
     assert not _fault_matches_tool("", "cross_lookup_vehicle")
+
+
+def test_backend_fault_results_are_told_apart_from_validation_errors():
+    assert _is_backend_fault_result({"error": {"code": "timeout"}})
+    assert _is_backend_fault_result({"fehler": "system"})
+    assert _is_backend_fault_result({"fehler": "slot_vergeben"})
+    assert _is_backend_fault_result({"fehler": "kundendaten_nicht_verfuegbar"})
+    for validation in ("slot_ungueltig", "services_ungueltig", "kundendaten_fehlen",
+                       "termin_nicht_gefunden", "auswahl_offen", "zu_viele_versuche"):
+        assert not _is_backend_fault_result({"fehler": validation}), validation
+    assert not _is_backend_fault_result({"buchungsnummer": "B-1"})
 
 
 def test_cross3_write_tools_stay_in_sync():

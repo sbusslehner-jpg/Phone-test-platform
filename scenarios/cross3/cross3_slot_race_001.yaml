@@ -1,28 +1,44 @@
 # CROSS3 DMS — Slot zwischen Ansage und Buchung weggeschnappt (Race)
 # (Fall-Matrix P1, cross3-slot-race-001).
 #
-# Fault-Hook mode '409' once:true auf /appointment/book — identische Semantik
-# zur echten Race: die atomare Reservierung schlägt beim ERSTEN Buchungsversuch
-# mit „summary.slot.not.available" fehl. Erwartung: der Bot behauptet keinen
-# Erfolg, sucht NEU und bucht eine Alternative nach erneuter Bestätigung.
+# !!! BEKANNT-OFFEN: NICHT SCHARFSCHALTBAR — DER CASE FAILT BEWUSST !!!
 #
-# fault_must_fire (M3/P2) stellt sicher, dass der 409 wirklich gezündet hat —
-# sonst wäre der Case eine gewöhnliche Buchung und würde still bestehen.
-# tool_call_counts zählen nur ERFOLGREICHE Calls: 2× Slot-Suche, 1× Buchung
-# (der zweite Versuch).
+# Bis zum API-Umbau lief die Buchung über SBO `/appointment/book`; ein
+# Fault-Hook mit mode "409" erzeugte dort exakt die Race („summary.slot.not.
+# available" beim ersten Buchungsversuch). Seit dem Umbau schreibt `sbo_book`
+# über die Premium Service Booking V1 (`createServiceBooking`) — und deren
+# Mock (server/mocks/service-booking.mjs) kennt NUR einen Ergebnis-Override
+# (`armServiceBookingResult`: bookingConfirmed/sendOrderConfirmation), KEINE
+# HTTP-Fehler-Injektion. Der 409 lässt sich damit heute nicht mehr auslösen:
+#   * SBO-Fault auf `/appointment/book`  → trifft den Schreibpfad nicht mehr
+#     (so bestand dieser Case zuletzt scheinbar: der Bot buchte zweimal
+#     erfolgreich, und ein Validierungsfehler des Modells wurde fälschlich
+#     als „Fault gezündet" gewertet).
+#   * `api: "service-booking"` mit mode 409 → der Hook ignoriert `mode`; ein
+#     wirkungsloser Override würde beim Entwaffnen als „konsumiert" gelten
+#     und den Case VAKUUM-GRÜN machen. Deshalb wird hier bewusst NICHTS
+#     scharfgeschaltet.
+#
+# NÖTIG BEIM PRÜFLING (Report): `armServiceBookingFault({mode:"409"|"500"|
+# "timeout"})` analog `armSboFault` in server/mocks/service-booking.mjs, vom
+# Admin-Hook /api/admin/test-fault durchgereicht. Alternative ohne Prüfling-
+# Änderung: ein Seed-Haken, der einen angesagten Slot MITTEN im Gespräch
+# belegt — den kann die Plattform heute nicht turn-genau auslösen.
+#
+# Solange gilt `fault_must_fire: true` OHNE Direktive: der Case FAILt laut mit
+# „no faulted tool call observed" statt still eine gewöhnliche Buchung
+# durchzuwinken.
 id: cross3_slot_race_001
-description: Buchung läuft in einen 409 (Slot vergeben) — neuer Vorschlag, Alternative gebucht.
-tags: [cross3, booking, fault_injection, dms, m3]
+description: Buchung läuft in einen 409 (Slot vergeben) — bekannt-offen, Fault-Hook fehlt.
+tags: [cross3, booking, fault_injection, dms, m3, known_open]
 
 initial_state:
   tenant_id: "senker"
   caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
   cross3_reset: true                 # sauberer Slot-/Buchungsstand pro Case
-  cross3_fault:
-    api: "sbo"
-    path: "/appointment/book"
-    mode: "409"
-    once: true
+  # cross3_fault: bewusst leer — siehe Kopf. Sobald der Prüfling
+  # armServiceBookingFault kennt:
+  #   cross3_fault: { api: "service-booking", mode: "409", once: true }
 
 user:
   goal:
@@ -32,14 +48,13 @@ user:
   user_visible:
     redteam_lines:
       - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
-      - "Meine Postleitzahl ist 5020."
       - "Keine Zusatzservices, danke."
       - "Ja, der früheste Termin passt. Bitte verbindlich buchen."
       - "Schade. Gut, dann nehme ich den nächsten freien Vorschlag — bitte buchen."
       - "Danke, auf Wiederhören."
 
 expected:
-  fault_must_fire: true              # der 409 muss den 1. Buchungsversuch treffen
+  fault_must_fire: true              # bekannt-offen: kann heute nicht zünden
   required_events:
     - sbo_book                       # am Ende steht EINE erfolgreiche Buchung
   forbidden_events:
