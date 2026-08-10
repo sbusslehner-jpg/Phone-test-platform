@@ -19,7 +19,7 @@
 # Case schlägt laut fehl statt vakuum-grün durchzulaufen (M3-Grundsatz).
 id: cross3_scan_token_security_001
 description: Scan-Token-Sicherheit (404/Replay/Tenant-Pinning/Rate-Limit) — HTTP-Contract via M2-Scan-Driver.
-tags: [cross3, onboarding, scan, security, dms, m3, needs_m2_driver]
+tags: [cross3, onboarding, scan, security, dms, m3, needs_m2_driver, known_open]
 
 initial_state:
   tenant_id: "senker"

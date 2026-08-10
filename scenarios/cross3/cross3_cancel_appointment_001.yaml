@@ -5,13 +5,10 @@
 # inkl. Ownership-Check (Termin gehört dem Anrufer per Rufnummer) und dass der
 # Bot erst nach mündlicher Bestätigung storniert.
 #
-# VORAUSSETZUNG: eine bestehende Buchung von Max Mustermann im SBO-Mock
-# (z. B. Vorlauf cross3_book_pickerl_001 in derselben CROSS3-Instanz).
-# BEWUSST KEIN cross3_reset: der Wipe würde genau den Termin löschen, der
-# storniert werden soll. Braucht M2 (Seed-Hook für SBO-Buchungen), um den
-# Termin deterministisch pro Case anzulegen — dann auch expected.database
-# auf appointments.<id>.status == 'cancelled' schärfen (Adapter spiegelt
-# sbo_cancel in die Plattform-Welt).
+# VORAUSSETZUNG: ein bestehender Termin von Max Mustermann. Der kommt seit
+# dem Seed-Feld `cross3_seed` aus dem Szenario selbst (Adapter →
+# POST /api/admin/test-seed) statt aus dem Vorlauf eines anderen Cases —
+# vorher hing der Fall davon ab, ob zufällig noch eine Buchung herumlag.
 id: cross3_cancel_appointment_001
 description: Bekannter Kunde storniert seinen Werkstatttermin nach Verifikation.
 tags: [cross3, cancellation, dms, m3]
@@ -19,6 +16,16 @@ tags: [cross3, cancellation, dms, m3]
 initial_state:
   tenant_id: "senker"
   caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+  cross3_reset: true                 # deterministischer Ausgangszustand pro Case
+  cross3_seed:                       # … und der Termin, um den es geht
+    - art: "termin"
+      telefon: "+436601234567"       # Ownership laeuft ueber die Rufnummer
+      kunde: { vorname: "Max", nachname: "Mustermann" }
+      # PFLICHT: das Fahrzeug des erkannten Anrufers. sbo_get_my_appointments
+      # filtert die Termine nach der VIN des Polo (veh-99701) — ein Seed ohne
+      # (bekanntes) Kennzeichen ist fuer den Bot unsichtbar.
+      fahrzeug: { kennzeichen: "S-123AB" }
+      services: ["pickerl"]
 
 user:
   goal:
@@ -29,8 +36,13 @@ user:
       - "Guten Tag, ich muss meinen Werkstatttermin leider stornieren."
       - "Meine Postleitzahl ist 5020."
       - "Ja, genau diesen Termin meine ich — bitte stornieren."
-      - "Ja, ich bin sicher. Bitte verbindlich stornieren."
-      - "Danke, das war alles. Auf Wiederhören."
+      # Realistische Rückfrage statt einer starren Storno-Wiederholung: die
+      # alte Zeile („Ja, ich bin sicher. Bitte verbindlich stornieren.") kam
+      # NACH der Erfolgsmeldung und trieb das Modell in einen zweiten,
+      # zwangsläufig fehlschlagenden Storno-Versuch — ein Kunstprodukt des
+      # Skripts, kein Bot-Verhalten.
+      - "Danke. Bekomme ich dazu noch eine Bestätigung per E-Mail?"
+      - "Alles klar, das war alles. Auf Wiederhören."
 
 expected:
   required_events:

@@ -9,8 +9,11 @@
 # BRAUCHT M2 (sbo_termin_verschieben): sobald das echte Verschiebe-Tool
 # existiert, Assertions auf required [sbo_termin_verschieben] + counts
 # {sbo_termin_verschieben: 1} umstellen und sbo_book/sbo_cancel verbieten.
-# VORAUSSETZUNG heute: bestehende Buchung von Max im SBO-Mock (wie beim
-# Storno-Szenario); kein cross3_reset, sonst fehlt der zu verschiebende Termin.
+# VORAUSSETZUNG: bestehender Termin von Max — kommt aus `cross3_seed`.
+# ACHTUNG Fahrzeug: der Seed MUSS den Polo (S-123AB) tragen. Ohne Fahrzeug
+# legte er einen Termin an, den sbo_get_my_appointments wegfilterte (der
+# Ownership-Filter vergleicht die VIN); der Bot fand nichts zu verschieben
+# und der Case fiel mit „sbo_book/sbo_cancel never occurred" durch.
 id: cross3_move_appointment_001
 description: Bekannter Kunde verschiebt seinen Termin (heute = Storno + Neubuchung).
 tags: [cross3, booking, cancellation, dms, m3]
@@ -18,6 +21,16 @@ tags: [cross3, booking, cancellation, dms, m3]
 initial_state:
   tenant_id: "senker"
   caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+  cross3_reset: true                 # deterministischer Ausgangszustand pro Case
+  cross3_seed:                       # … und der Termin, um den es geht
+    - art: "termin"
+      telefon: "+436601234567"       # Ownership laeuft ueber die Rufnummer
+      kunde: { vorname: "Max", nachname: "Mustermann" }
+      # PFLICHT: das Fahrzeug des erkannten Anrufers. sbo_get_my_appointments
+      # filtert die Termine nach der VIN des Polo (veh-99701) — ein Seed ohne
+      # (bekanntes) Kennzeichen ist fuer den Bot unsichtbar.
+      fahrzeug: { kennzeichen: "S-123AB" }
+      services: ["pickerl"]
 
 user:
   goal:
