@@ -161,7 +161,7 @@ def test_voice_scenario_carries_a_valid_audio_block():
     assert s.initial_state.get("did")  # DID → Tenant-Auflösung der Bridge
 
 
-def test_reset_is_set_where_state_isolation_matters_and_not_where_it_breaks_seeds():
+def test_reset_is_set_where_state_isolation_matters():
     scenarios = _load()
     # Reset nötig: frischer Buchungsstand ist Teil der Aussage.
     for sid in (
@@ -171,14 +171,43 @@ def test_reset_is_set_where_state_isolation_matters_and_not_where_it_breaks_seed
         "cross3_unknown_caller_booking_001",
     ):
         assert scenarios[sid].initial_state.get("cross3_reset") is True, sid
-    # KEIN Reset: der Case braucht einen vorbestehenden Termin (Wipe würde
-    # die Voraussetzung zerstören — siehe Kommentar in den Dateien).
-    for sid in (
-        "cross3_cancel_appointment_001",
-        "cross3_move_appointment_001",
-        "cross3_cancel_fault_mid_flow_001",
-    ):
-        assert not scenarios[sid].initial_state.get("cross3_reset"), sid
+
+
+#: Cases, deren Aussage einen VORBESTEHENDEN Termin von Max braucht.
+_NEEDS_SEEDED_APPOINTMENT = (
+    "cross3_cancel_appointment_001",
+    "cross3_move_appointment_001",
+    "cross3_info_appointments_001",
+    "cross3_cancel_fault_mid_flow_001",
+    "cross3_cancel_foreign_appointment_001",
+)
+
+
+def test_appointment_seeds_carry_the_callers_own_vehicle():
+    """Der Ownership-Filter vergleicht die VIN — ohne Fahrzeug ist der Termin unsichtbar.
+
+    Genau daran scheiterte cross3_move_appointment_001: der Seed legte den
+    Termin ohne Fahrzeugangabe an, `sbo_get_my_appointments` filterte ihn weg
+    und der Bot hatte nichts zu verschieben.
+    """
+    scenarios = _load()
+    for sid in _NEEDS_SEEDED_APPOINTMENT:
+        seeds = scenarios[sid].initial_state.get("cross3_seed")
+        assert seeds, f"{sid}: braucht einen Termin-Seed"
+        termine = [s for s in seeds if s.get("art") == "termin"]
+        assert termine, sid
+        for seed in termine:
+            assert seed.get("telefon") == "+436601234567", sid
+            # Max Mustermanns Polo (veh-99701) — das Fahrzeug des Anrufers.
+            assert seed.get("fahrzeug", {}).get("kennzeichen") == "S-123AB", sid
+        # Reset davor, sonst hängt der Case von Alt-Zuständen ab.
+        assert scenarios[sid].initial_state.get("cross3_reset") is True, sid
+
+
+def test_no_slot_free_really_empties_the_calendar():
+    s = _load()["cross3_no_slot_free_001"]
+    seeds = s.initial_state.get("cross3_seed") or []
+    assert any(x.get("art") == "keine_slots" for x in seeds)
 
 
 def test_m2_dependent_scenarios_are_marked():

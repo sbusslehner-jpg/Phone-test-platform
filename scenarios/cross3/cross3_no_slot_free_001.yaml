@@ -5,11 +5,10 @@
 # Zeitraum/Serviceberater) anbieten — und darf nicht buchen oder Erfolg
 # suggerieren.
 #
-# BRAUCHT M2 (Slot-Seed-Hook): um „alle Slots belegt" deterministisch
-# herzustellen, muss der SBO-Mock pro Case leergebucht werden können
-# (storage.reserveSlot je Slot). Ohne den Hook findet der Bot Slots — der
-# skriptete Anrufer lehnt dann ab, sodass die Verbote weiterhin gelten,
-# aber der eigentliche Leer-Fall nicht ausgeübt wird.
+# Der Leer-Fall wird jetzt wirklich hergestellt: `cross3_seed` bucht über
+# POST /api/admin/test-seed (art: "keine_slots") den kompletten Terminraster
+# der nächsten 14 Tage leer. Vorher fand der Bot Slots, der skriptete Anrufer
+# lehnte ab — die Verbote galten, der eigentliche Fall lief aber nie.
 id: cross3_no_slot_free_001
 description: Kein freier Slot — ehrliche Auskunft, keine Buchung, kein Falscherfolg.
 tags: [cross3, booking, edge_case, dms, m3]
@@ -17,6 +16,10 @@ tags: [cross3, booking, edge_case, dms, m3]
 initial_state:
   tenant_id: "senker"
   caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  cross3_reset: true                 # frischer Slot-Stand vor dem Leerbuchen
+  cross3_seed:
+    - art: "keine_slots"
+      tage: 14                       # das gesamte Suchfenster des Bots
 
 user:
   goal:

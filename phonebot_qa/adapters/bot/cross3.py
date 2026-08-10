@@ -29,6 +29,15 @@ Per-case inputs are read from ``scenario.initial_state``:
                    ``"senker"``.
 ``caller_phone``   Verified caller number; empty/absent ⇒ unknown caller
                    (drives CROSS3's customer-recognition invariant).
+``cross3_seed``    Ausgangszustand über ``POST /api/admin/test-seed`` (ein
+                   Objekt oder eine Liste). ``{art: "termin", telefon,
+                   kunde, fahrzeug: {kennzeichen}, services}`` legt einen
+                   vorbestehenden Termin an, ``{art: "keine_slots"}`` bucht
+                   den Terminraster leer. Läuft NACH ``cross3_reset``.
+                   Achtung: ``fahrzeug.kennzeichen`` muss das Fahrzeug des
+                   erkannten Anrufers sein — ``sbo_get_my_appointments``
+                   filtert nach dessen VIN, ein Termin ohne (bekanntes)
+                   Fahrzeug ist für den Bot unsichtbar.
 ``cross3_fault``   Fehler-Injektion über ``POST /api/admin/test-fault``. Das
                    Feld ``api`` wählt das Ziel (server/routes/admin.mjs):
                    ``"sbo"`` (Default, ``path`` + ``mode``),
@@ -152,6 +161,19 @@ def _service_booking_fault_fired(result: Any) -> bool:
     Adapter in-band, dass der scharfgeschaltete Fault eingelöst wurde.
     """
     return isinstance(result, dict) and str(result.get("terminStatus", "")) == "angefragt"
+
+
+def _seed_directives(raw: Any) -> list[dict[str, Any]]:
+    """``initial_state.cross3_seed`` normalisieren: ein Dict oder eine Liste."""
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        return [dict(raw)]
+    if isinstance(raw, (list, tuple)):
+        return [dict(d) for d in raw if isinstance(d, dict) and d]
+    raise TypeError(
+        f"cross3_seed muss ein Objekt oder eine Liste von Objekten sein, nicht {type(raw).__name__}"
+    )
 
 
 def _fault_consumed_by_tool(
@@ -347,6 +369,10 @@ class Cross3Adapter(BotAdapter):
         # Adapter-Default.
         if bool(state.get("cross3_reset", self.reset_state)):
             await self._reset_tenant(tenant_id)
+        # Ausgangszustand herstellen (M2-Seed-Hook): vorbestehender Termin,
+        # „kein Slot frei", … — NACH dem Reset, sonst wischt der Wipe ihn weg.
+        for directive in _seed_directives(state.get("cross3_seed")):
+            await self._seed(tenant_id, directive)
         # Optional fault injection (§17). Requires the admin-guarded test-fault
         # hook in cross3-dms-agent. Inert if the scenario declares none.
         fault = state.get("cross3_fault")
@@ -394,6 +420,28 @@ class Cross3Adapter(BotAdapter):
             )
         await self._admin("POST", f"/api/admin/tenants/{tenant_id}/wipe", None)
         await self._admin("POST", "/api/admin/tenants", config)
+
+    async def _seed(self, tenant_id: str, directive: dict[str, Any]) -> None:
+        """Einen Ausgangszustand über ``POST /api/admin/test-seed`` herstellen.
+
+        Bis hierher kam der Seed aus einem externen Skript — mit dem Ergebnis,
+        dass Storno-/Verschiebe-Szenarien mal einen Termin vorfanden und mal
+        nicht (cross3_move_appointment_001 fand gar keinen, weil der Seed den
+        Termin ohne Fahrzeug anlegte und der Ownership-Filter ihn wegwarf).
+        Jetzt gehört der Seed zum Szenario, genau wie ``cross3_reset``.
+
+        Ein fehlgeschlagener Seed ist ein FEHLER, kein Hinweis: der Case liefe
+        sonst mit falscher Voraussetzung durch und die Assertions wären
+        wertlos.
+        """
+        resp = await self._admin(
+            "POST", "/api/admin/test-seed", {"tenantId": tenant_id, **directive}
+        )
+        if isinstance(resp, dict) and resp.get("ok") is False:
+            raise RuntimeError(
+                f"cross3_seed: Seed {directive!r} ist fehlgeschlagen "
+                f"(Antwort: {resp!r}) — der Case hätte eine falsche Voraussetzung."
+            )
 
     async def _arm_fault(self, directive: dict[str, Any]) -> None:
         """Arm a one-shot backend fault in CROSS3 before the call."""

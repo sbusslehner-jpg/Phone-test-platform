@@ -425,6 +425,57 @@ async def test_scenario_flag_can_disable_adapter_default():
     assert admin.calls == []  # kein Reset, kein sonstiger Admin-Verkehr
 
 
+async def test_seed_runs_after_the_reset_with_the_tenant_filled_in():
+    admin = FakeAdmin()
+    chatty = FakeChat([_reply("Hallo!")])
+    scenario = _booking_scenario(
+        cross3_reset=True,
+        cross3_seed=[
+            {
+                "art": "termin",
+                "telefon": "+436601234567",
+                "fahrzeug": {"kennzeichen": "S-123AB"},
+            }
+        ],
+    )
+    await run_suite([scenario], bot=Cross3Adapter(chat_fn=chatty, admin_fn=admin))
+    paths = [(m, p) for (m, p, _) in admin.calls]
+    assert paths == [
+        ("GET", "/api/admin/tenants"),
+        ("POST", "/api/admin/tenants/senker/wipe"),
+        ("POST", "/api/admin/tenants"),
+        ("POST", "/api/admin/test-seed"),  # NACH dem Wipe, sonst ist er weg
+    ]
+    assert admin.calls[-1][2] == {
+        "tenantId": "senker",
+        "art": "termin",
+        "telefon": "+436601234567",
+        "fahrzeug": {"kennzeichen": "S-123AB"},
+    }
+
+
+async def test_a_single_seed_object_is_accepted_too():
+    admin = FakeAdmin()
+    chatty = FakeChat([_reply("Hallo!")])
+    scenario = _booking_scenario(cross3_seed={"art": "keine_slots", "tage": 14})
+    await run_suite([scenario], bot=Cross3Adapter(chat_fn=chatty, admin_fn=admin))
+    assert admin.calls == [
+        ("POST", "/api/admin/test-seed", {"tenantId": "senker", "art": "keine_slots", "tage": 14})
+    ]
+
+
+async def test_failed_seed_makes_the_case_error_instead_of_lying():
+    """Ein Case mit falscher Voraussetzung darf nicht still weiterlaufen."""
+    admin = FakeAdmin(
+        responses={("POST", "/api/admin/test-seed"): {"ok": False, "fehler": "slot belegt"}}
+    )
+    chatty = FakeChat([_reply("Hallo!")])
+    scenario = _booking_scenario(cross3_seed={"art": "termin", "telefon": "+436601234567"})
+    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=chatty, admin_fn=admin))).results[0]
+    assert r.result == "ERROR"
+    assert "cross3_seed" in (r.critical_failure or "")
+
+
 async def test_reset_unknown_tenant_raises():
     admin = FakeAdmin(responses={("GET", "/api/admin/tenants"): []})
     adapter = Cross3Adapter(chat_fn=FakeChat([_reply("x")]), admin_fn=admin)

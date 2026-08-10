@@ -9,10 +9,11 @@
 # (sbo_cancel-toolEvent mit status=error auf dem Fault-Pfad) — sonst FAIL
 # statt Vakuum-PASS.
 #
-# VORAUSSETZUNG: bestehende Buchung von Max im SBO-Mock (wie beim regulären
-# Storno-Szenario; deterministisches Anlegen braucht M2 Seed-Hook). Bewusst
-# KEIN cross3_reset — der Wipe würde den Termin entfernen, den der Bot zu
-# stornieren versuchen soll.
+# VORAUSSETZUNG: bestehender Termin von Max — kommt aus `cross3_seed`. Genau
+# der fehlte zuletzt: der Bot fand nichts zu stornieren, versuchte den Storno
+# nie und der scharfe Fault blieb unangetastet (fault:consumed FAIL). Der
+# Fault-Pfad SELBST ist weiterhin richtig: der Storno läuft auch nach dem
+# API-Umbau über SBO v1 /appointment/cancel.
 id: cross3_cancel_fault_mid_flow_001
 description: Storno läuft in ein Backend-Timeout — keine Erfolgsbehauptung, Termin bleibt bestehen.
 tags: [cross3, fault_injection, cancellation, safety, dms, m3]
@@ -20,6 +21,16 @@ tags: [cross3, fault_injection, cancellation, safety, dms, m3]
 initial_state:
   tenant_id: "senker"
   caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  cross3_reset: true                 # deterministischer Ausgangszustand pro Case
+  cross3_seed:                       # … und der Termin, um den es geht
+    - art: "termin"
+      telefon: "+436601234567"       # Ownership laeuft ueber die Rufnummer
+      kunde: { vorname: "Max", nachname: "Mustermann" }
+      # PFLICHT: das Fahrzeug des erkannten Anrufers. sbo_get_my_appointments
+      # filtert die Termine nach der VIN des Polo (veh-99701) — ein Seed ohne
+      # (bekanntes) Kennzeichen ist fuer den Bot unsichtbar.
+      fahrzeug: { kennzeichen: "S-123AB" }
+      services: ["pickerl"]
   cross3_fault:
     api: "sbo"
     path: "/appointment/cancel"
