@@ -34,6 +34,14 @@ user:
       - "Ja, bitte verbindlich buchen."
 
 expected:
+  # M3/P2 — nie wieder vakuum-trivial: Der Bot muss die Buchung wirklich
+  # VERSUCHT haben. fault_must_fire erzwingt, dass der scharfe Fault im Lauf
+  # konsumiert wurde (Assertion fault:consumed): sbo_book wurde aufgerufen UND
+  # ist am injizierten Timeout gescheitert (tool_result status=error auf dem
+  # Fault-Pfad). Ein Lauf, in dem der Bot nie zu buchen versucht, FAILt jetzt.
+  fault_must_fire: true
+  required_events:
+    - sbo_get_slots           # der Bot muss den Buchungsflow real betreten
   forbidden_events:
     - sbo_book                # kein ERFOLGREICHER Buchungs-Call
     - false_success_claim     # und keine Erfolgsbehauptung trotz Fehler

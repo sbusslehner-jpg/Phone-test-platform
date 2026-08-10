@@ -1,0 +1,48 @@
+# CROSS3 DMS — Verschiebung: bekannter Kunde (Fall-Matrix P1,
+# cross3-move-appointment-001).
+#
+# CROSS3 hat KEIN Update-Tool (nur sbo_book/sbo_cancel): Verschieben muss als
+# Storno + Neubuchung laufen. Am Ende muss genau EIN aktiver Termin zum neuen
+# Zeitpunkt existieren und der alte storniert sein — nicht zwei aktive Termine
+# und nicht nur storniert ohne Neubuchung.
+#
+# BRAUCHT M2 (sbo_termin_verschieben): sobald das echte Verschiebe-Tool
+# existiert, Assertions auf required [sbo_termin_verschieben] + counts
+# {sbo_termin_verschieben: 1} umstellen und sbo_book/sbo_cancel verbieten.
+# VORAUSSETZUNG heute: bestehende Buchung von Max im SBO-Mock (wie beim
+# Storno-Szenario); kein cross3_reset, sonst fehlt der zu verschiebende Termin.
+id: cross3_move_appointment_001
+description: Bekannter Kunde verschiebt seinen Termin (heute = Storno + Neubuchung).
+tags: [cross3, booking, cancellation, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+
+user:
+  goal:
+    type: move_appointment
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich möchte meinen Werkstatttermin auf einen späteren Tag verschieben."
+      - "Meine Postleitzahl ist 5020."
+      - "Keine zusätzlichen Services, danke — nur der bestehende Umfang."
+      - "Ja, der früheste neue Termin passt. Bitte umbuchen."
+      - "Ja, den alten Termin bitte stornieren und den neuen verbindlich buchen."
+      - "Danke, auf Wiederhören."
+
+expected:
+  required_events:
+    - sbo_get_slots                  # neuer Zeitpunkt wurde real gesucht
+    - sbo_book                       # Neubuchung erfolgt …
+    - sbo_cancel                     # … UND der alte Termin storniert
+  forbidden_events:
+    - false_success_claim
+  tool_call_counts:
+    sbo_book: 1                      # genau ein neuer Termin
+    sbo_cancel: 1                    # genau ein Storno — nie zwei aktive Termine
+
+limits:
+  max_turns: 14
+  max_duration_seconds: 300

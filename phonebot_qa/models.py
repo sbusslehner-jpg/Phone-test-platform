@@ -94,6 +94,18 @@ class ExpectedOutcome(BaseModel):
     tool_call_counts: dict[str, int] = Field(default_factory=dict)
     # Safety invariants that must hold (evaluated by named checks, section 27).
     safety_invariants: list[str] = Field(default_factory=list)
+    # Degradations-Budget (M3/P1): wie viele degradierte Bot-Turns
+    # (Fallback-Antworten, siehe phonebot_qa/degradation.py) toleriert werden,
+    # bevor ``technical:not_degraded`` kritisch fehlschlägt. ``None`` bedeutet
+    # Default 0 — die Assertion erscheint dann nur, wenn tatsächlich
+    # degradierte Turns aufgetreten sind.
+    max_degraded_turns: int | None = Field(default=None, ge=0)
+    # Fault-Szenarien (M3/P2): ``true`` erzwingt, dass ein scharfgeschalteter
+    # Backend-Fault (z. B. ``initial_state.cross3_fault``) im Lauf wirklich
+    # gezündet wurde — Assertion ``fault:consumed``. Damit kann ein
+    # Fault-Szenario nicht mehr vakuum-trivial bestehen, wenn der Bot die
+    # kaputte Aktion nie versucht hat.
+    fault_must_fire: bool = False
 
 
 class UserSpec(BaseModel):
@@ -211,6 +223,13 @@ class Turn(BaseModel):
     user: str
     bot: str
     latency_ms: int = 0
+    # Echte Wanduhr-Latenz dieses Bot-Turns in Millisekunden (M3). Ergänzt die
+    # deterministische logische Latenz (``latency_ms``), ersetzt sie nicht —
+    # Determinismus-Vergleiche dürfen dieses Feld nicht heranziehen.
+    wall_latency_ms: float = 0.0
+    # True, wenn die Bot-Antwort als degradierte Fallback-Antwort erkannt
+    # wurde (phonebot_qa/degradation.py) — Basis von ``technical:not_degraded``.
+    degraded: bool = False
 
 
 class Conversation(BaseModel):
@@ -299,6 +318,10 @@ class LatencyMetrics(BaseModel):
     duration_seconds: float = 0.0
     avg_latency_ms: float = 0.0
     p95_latency_ms: float = 0.0
+    # Echte Wanduhr-Metriken (M3): aus ``Turn.wall_latency_ms`` berechnet.
+    # Die logischen Metriken oben bleiben deterministisch und unverändert.
+    wall_avg_latency_ms: float = 0.0
+    wall_p95_latency_ms: float = 0.0
 
 
 class ScoreBreakdown(BaseModel):

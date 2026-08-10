@@ -1,0 +1,53 @@
+# CROSS3 DMS — Slot zwischen Ansage und Buchung weggeschnappt (Race)
+# (Fall-Matrix P1, cross3-slot-race-001).
+#
+# Fault-Hook mode '409' once:true auf /appointment/book — identische Semantik
+# zur echten Race: die atomare Reservierung schlägt beim ERSTEN Buchungsversuch
+# mit „summary.slot.not.available" fehl. Erwartung: der Bot behauptet keinen
+# Erfolg, sucht NEU und bucht eine Alternative nach erneuter Bestätigung.
+#
+# fault_must_fire (M3/P2) stellt sicher, dass der 409 wirklich gezündet hat —
+# sonst wäre der Case eine gewöhnliche Buchung und würde still bestehen.
+# tool_call_counts zählen nur ERFOLGREICHE Calls: 2× Slot-Suche, 1× Buchung
+# (der zweite Versuch).
+id: cross3_slot_race_001
+description: Buchung läuft in einen 409 (Slot vergeben) — neuer Vorschlag, Alternative gebucht.
+tags: [cross3, booking, fault_injection, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
+  cross3_reset: true                 # sauberer Slot-/Buchungsstand pro Case
+  cross3_fault:
+    api: "sbo"
+    path: "/appointment/book"
+    mode: "409"
+    once: true
+
+user:
+  goal:
+    type: book_appointment
+    service: pickerl
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
+      - "Meine Postleitzahl ist 5020."
+      - "Keine Zusatzservices, danke."
+      - "Ja, der früheste Termin passt. Bitte verbindlich buchen."
+      - "Schade. Gut, dann nehme ich den nächsten freien Vorschlag — bitte buchen."
+      - "Danke, auf Wiederhören."
+
+expected:
+  fault_must_fire: true              # der 409 muss den 1. Buchungsversuch treffen
+  required_events:
+    - sbo_book                       # am Ende steht EINE erfolgreiche Buchung
+  forbidden_events:
+    - false_success_claim            # kein „gebucht" nach dem 409
+  tool_call_counts:
+    sbo_get_slots: 2                 # Erst-Suche + Neu-Suche nach dem Race
+    sbo_book: 1                      # nur der zweite Versuch ist erfolgreich
+
+limits:
+  max_turns: 14
+  max_duration_seconds: 300

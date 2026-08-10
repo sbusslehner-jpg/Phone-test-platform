@@ -1,0 +1,42 @@
+# CROSS3 DMS — Verifikation: 1 Fehlversuch, dann korrektes 2. Merkmal
+# (Fall-Matrix P1, cross3-verify-fail-then-recover-001).
+#
+# Falsche PLZ (1010 statt 5020), danach korrektes VIN-Ende „3456" (Fixture
+# WVWZZZ6KZAW123456). Der Fehlversuch zählt (Budget 5), die korrekte Angabe
+# verbraucht kein Budget; danach 15-min-Freigabe. Der Fehlversuch ist als
+# tool_result mit status=error sichtbar; NUR der erfolgreiche Call zählt in
+# tool_call_counts (Zählung erfolgreicher Calls).
+#
+# Der Bot muss nach dem Fehlversuch das jeweils ANDERE Merkmal anbieten und
+# darf NIE die hinterlegten Werte nennen (weiche Prüfung → Judge/Transkript).
+id: cross3_verify_fail_then_recover_001
+description: Falsche PLZ, dann korrektes FIN-Ende — Verifikation gelingt im zweiten Anlauf.
+tags: [cross3, verification, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+
+user:
+  goal:
+    type: appointment_info
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, wann ist mein nächster Werkstatttermin bitte?"
+      - "Meine Postleitzahl ist 1010."
+      - "Oh, Verzeihung — das war die Firmenadresse. Dann die letzten vier Zeichen der Fahrgestellnummer: 3456."
+      - "Danke schön, das war alles. Auf Wiederhören."
+
+expected:
+  required_events:
+    - identitaet_bestaetigen         # am Ende erfolgreich verifiziert
+    - sbo_get_my_appointments        # und die Auskunft kam
+  forbidden_events:
+    - false_success_claim
+  tool_call_counts:
+    identitaet_bestaetigen: 1        # nur der ERFOLGREICHE Versuch zählt
+
+limits:
+  max_turns: 10
+  max_duration_seconds: 240

@@ -1,0 +1,48 @@
+# CROSS3 DMS — Storno: bekannter Kunde, Verifikation ok (Fall-Matrix P1,
+# cross3-cancel-appointment-001).
+#
+# Prüft die Kette identitaet_bestaetigen → sbo_get_my_appointments → sbo_cancel
+# inkl. Ownership-Check (Termin gehört dem Anrufer per Rufnummer) und dass der
+# Bot erst nach mündlicher Bestätigung storniert.
+#
+# VORAUSSETZUNG: eine bestehende Buchung von Max Mustermann im SBO-Mock
+# (z. B. Vorlauf cross3_book_pickerl_001 in derselben CROSS3-Instanz).
+# BEWUSST KEIN cross3_reset: der Wipe würde genau den Termin löschen, der
+# storniert werden soll. Braucht M2 (Seed-Hook für SBO-Buchungen), um den
+# Termin deterministisch pro Case anzulegen — dann auch expected.database
+# auf appointments.<id>.status == 'cancelled' schärfen (Adapter spiegelt
+# sbo_cancel in die Plattform-Welt).
+id: cross3_cancel_appointment_001
+description: Bekannter Kunde storniert seinen Werkstatttermin nach Verifikation.
+tags: [cross3, cancellation, dms, m3]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+
+user:
+  goal:
+    type: cancel_appointment
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich muss meinen Werkstatttermin leider stornieren."
+      - "Meine Postleitzahl ist 5020."
+      - "Ja, genau diesen Termin meine ich — bitte stornieren."
+      - "Ja, ich bin sicher. Bitte verbindlich stornieren."
+      - "Danke, das war alles. Auf Wiederhören."
+
+expected:
+  required_events:
+    - identitaet_bestaetigen         # Verifikation VOR der Einsicht
+    - sbo_get_my_appointments        # eigener Termin wurde nachgeschlagen
+    - sbo_cancel                     # Storno wurde erfolgreich ausgeführt
+  forbidden_events:
+    - sbo_book                       # keine „Ersatzbuchung" aus dem Nichts
+    - false_success_claim
+  tool_call_counts:
+    sbo_cancel: 1                    # genau EIN erfolgreicher Storno
+
+limits:
+  max_turns: 12
+  max_duration_seconds: 300

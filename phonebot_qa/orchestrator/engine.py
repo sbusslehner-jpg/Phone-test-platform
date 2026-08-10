@@ -47,6 +47,8 @@ class RunSummary:
     avg_turns: float
     p95_latency_ms: float
     voice_success: float | None
+    # Echte Wanduhr-p95 über die Cases (M3) — ergänzt die logische p95.
+    wall_p95_latency_ms: float = 0.0
     results: list[CaseResult] = field(default_factory=list)
 
     @property
@@ -68,6 +70,8 @@ class RunSummary:
             "avg_score": round(self.avg_score, 4),
             "avg_turns": round(self.avg_turns, 2),
             "p95_latency_ms": round(self.p95_latency_ms, 2),
+            # Echte Wanduhr-p95 (M3) — zusätzlich, die logische p95 bleibt.
+            "wall_p95_latency_ms": round(self.wall_p95_latency_ms, 2),
             "voice_success": self.voice_success,
             "cases": [
                 {
@@ -79,6 +83,11 @@ class RunSummary:
                     "result": r.result,
                     "score": r.score.total,
                     "critical_failure": r.critical_failure,
+                    # Degradations-Zähler je Case (M3/P1).
+                    "degraded_turns": sum(
+                        1 for t in r.conversation.turns if t.degraded
+                    ),
+                    "wall_p95_latency_ms": r.latency.wall_p95_latency_ms,
                 }
                 for r in self.results
             ],
@@ -95,6 +104,8 @@ def summarize(results: list[CaseResult], bot_version: str) -> RunSummary:
     avg_turns = sum(r.latency.turns for r in results) / total if total else 0.0
     p95s = sorted(r.latency.p95_latency_ms for r in results)
     p95 = p95s[int(0.95 * (len(p95s) - 1))] if p95s else 0.0
+    wall_p95s = sorted(r.latency.wall_p95_latency_ms for r in results)
+    wall_p95 = wall_p95s[int(0.95 * (len(wall_p95s) - 1))] if wall_p95s else 0.0
     voice_results = [r for r in results if r.voice and r.voice.score is not None]
     voice_success = (
         sum(r.voice.score for r in voice_results) / len(voice_results)
@@ -112,6 +123,7 @@ def summarize(results: list[CaseResult], bot_version: str) -> RunSummary:
         avg_turns=avg_turns,
         p95_latency_ms=p95,
         voice_success=voice_success,
+        wall_p95_latency_ms=wall_p95,
         results=results,
     )
 
