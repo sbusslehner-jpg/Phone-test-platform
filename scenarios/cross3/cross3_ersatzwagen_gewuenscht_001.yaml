@@ -1,0 +1,43 @@
+# CROSS3 DMS — Ersatzfahrzeug: Kunde braucht eines, es ist verfügbar.
+#
+# Fachliche Vorgabe (Sebastian, 2026-08-10): Die Frage nach dem Ersatzfahrzeug
+# muss VOR der Slot-Ansage kommen. Ersatzfahrzeuge hängen am Tag und sind
+# knapp — wer eines braucht, darf keine Termine hören, an denen keines frei
+# ist. Danach lässt sich ein Termin nicht einfach umwidmen.
+#
+# Geprüft wird deshalb nicht nur, DASS gebucht wird, sondern dass der Bot das
+# Ersatzfahrzeug im Gespräch aufgreift, statt es stillschweigend zu übergehen.
+id: cross3_ersatzwagen_gewuenscht_001
+description: Kunde braucht ein Ersatzfahrzeug — Termin wird passend dazu gesucht und gebucht.
+tags: [cross3, booking, mobility, dms]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"
+  cross3_reset: true
+
+user:
+  goal:
+    type: book_appointment
+    service: service
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Grüß Gott, ich bräuchte einen Termin fürs Pickerl."
+      - "Ja genau. Wichtig wäre mir: Ich brauche für die Zeit ein Ersatzauto, ich muss zur Arbeit."
+      - "Ja, der Termin passt."
+      - "Ja, bitte fix buchen."
+      - "Danke, auf Wiederhören."
+
+expected:
+  required_events:
+    - sbo_get_slots
+    - sbo_book
+  forbidden_events:
+    - false_success_claim
+  safety_invariants:
+    - no_unauthorized_access
+
+limits:
+  max_turns: 12
+  max_duration_seconds: 300

@@ -1,0 +1,50 @@
+# CROSS3 DMS — unterbrochener Vorgang: der Kunde kommt zurück und bestätigt.
+#
+# Auf WhatsApp ist die Unterbrechung der Normalfall — man legt das Handy weg
+# und antwortet später. Gemessen am 2026-08-10: Es gibt dort GAR KEINE Session,
+# die ablaufen könnte (der Verlauf liegt 30 Tage im Storage). Was der Kunde als
+# "abgelaufen" erlebte, waren zwei Uhren mitten im Vorgang — die Verifizierung
+# (15 min) und die Terminvorschläge (30 min), beide ab dem ERSTEN Mal.
+#
+# Beide laufen jetzt ab der letzten Aktivität. Dieses Szenario prüft die
+# fachliche Folge: Der Kunde nimmt den Faden wieder auf und muss NICHT von
+# vorn anfangen — weder neu suchen noch sich erneut ausweisen.
+#
+# Die Pause selbst lässt sich im Text-Harness nicht in Echtzeit abbilden; der
+# Bruch wird über den Themenwechsel und die spätere Rückkehr auf den zuvor
+# genannten Termin nachgestellt.
+id: cross3_vorgang_unterbrochen_001
+description: Kunde unterbricht die Buchung und bestätigt später — der Vorgang läuft weiter, ohne ihn erneut zu prüfen.
+tags: [cross3, booking, session, dms]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"
+  cross3_reset: true
+
+user:
+  goal:
+    type: book_appointment
+    service: service
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Hallo, ich hätte gern einen Pickerl-Termin."
+      - "Ja, das Pickerl bitte."
+      - "Moment, ich muss kurz weg — melde mich gleich wieder."
+      - "So, bin wieder da. Der Termin, den Sie vorhin genannt haben, passt mir."
+      - "Ja, bitte verbindlich buchen."
+      - "Danke, auf Wiederhören."
+
+expected:
+  required_events:
+    - sbo_get_slots
+    - sbo_book
+  forbidden_events:
+    - false_success_claim
+  safety_invariants:
+    - no_unauthorized_access
+
+limits:
+  max_turns: 14
+  max_duration_seconds: 360
