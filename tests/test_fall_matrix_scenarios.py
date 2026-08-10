@@ -43,6 +43,15 @@ PRE_M3_IDS = {
     "cross3_redteam_cross_customer_001",
 }
 
+# Aus der fachlichen Klaerung mit dem Auftraggeber am 2026-08-10: Ersatzmobilitaet
+# muss VOR der Slot-Ansage feststehen (tagesgebunden und knapp), und ein auf
+# WhatsApp unterbrochener Vorgang darf den Kunden nicht bei null neu beginnen
+# lassen.
+FACHLICH_2026_08_IDS = {
+    "cross3_ersatzwagen_gewuenscht_001",
+    "cross3_vorgang_unterbrochen_001",
+}
+
 
 def _load():
     return {s.id: s for s in load_scenarios(CROSS3_DIR)}
@@ -52,7 +61,7 @@ def test_all_cross3_scenarios_load_without_errors():
     scenarios = _load()
     assert P1_IDS <= set(scenarios), sorted(P1_IDS - set(scenarios))
     assert PRE_M3_IDS <= set(scenarios)
-    assert set(scenarios) == P1_IDS | PRE_M3_IDS
+    assert set(scenarios) == P1_IDS | PRE_M3_IDS | FACHLICH_2026_08_IDS
 
 
 def test_every_scenario_has_deterministic_assertions_first():
