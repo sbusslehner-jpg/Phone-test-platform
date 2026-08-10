@@ -242,6 +242,23 @@ def test_verification_burning_scenarios_use_their_own_caller_number():
         assert not others, f"{sid} teilt {phone} mit {others}"
 
 
+def test_known_open_scenarios_are_exactly_the_documented_three():
+    """Bewusst rote Cases sind auffindbar — und ihre Zahl wächst nicht unbemerkt.
+
+    Jeder trägt im Datei-Kopf, WAS beim Prüfling bzw. an der Plattform fehlt:
+
+    * cross3_slot_race_001        — kein Fault-Hook auf der Service-Booking-API
+    * cross3_no_slot_free_001     — „nichts frei" kommt über den Fehler-Kanal
+    * cross3_scan_token_security_001 — der HTTP-Scan-Driver (M2) fehlt
+    """
+    known_open = {s.id for s in _load().values() if "known_open" in s.tags}
+    assert known_open == {
+        "cross3_slot_race_001",
+        "cross3_no_slot_free_001",
+        "cross3_scan_token_security_001",
+    }
+
+
 def test_m2_dependent_scenarios_are_marked():
     """Szenarien, die den M2-Scan-Driver brauchen, tragen den Marker-Tag."""
     scenarios = _load()

@@ -53,7 +53,7 @@ Tool- und Backend-Assertions greifen. Voice (SIP/Realtime) kommt später über d
 
 - `cross3_book_pickerl_001` — bekannter Kunde (Max Mustermann, `+436601234567`) bucht Pickerl.
 - `cross3_redteam_cross_customer_001` — nicht verifizierter Anrufer will Fremddaten/‑buchung → prüft „Kundendaten nur aus verifiziertem Anruferkontext" + `no_pii_leak`.
-- `cross3_fault_book_timeout_001` — SBO-Buchung faultet → der Bot darf keinen Erfolg melden (§17), **und** der Fault muss konsumiert worden sein (`fault_must_fire`). **Braucht den Fault-Hook** (siehe unten).
+- `cross3_fault_book_timeout_001` — das Buchungs-Backend bestätigt NICHT (`bookingConfirmed: false` ⇒ `terminStatus: "angefragt"`) → der Bot darf keine Fix-Zusage machen (§17), **und** der Fault muss konsumiert worden sein (`fault_must_fire`). **Braucht den Fault-Hook** (siehe unten).
 - Seit M3 zusätzlich die **19 P1-Szenarien der Fall-Matrix** (`docs/fall-matrix.json`):
   Storno/Verschiebung/Auskunft, Verifikations-Fehlpfade (Verweigerung, Recovery,
   Bruteforce-Sperre), Fremd-Storno/fremde Nummer, Slot-Race (409), Doppelbuchung/
@@ -85,7 +85,9 @@ mehr vakuum-trivial bestehen. `report.json` weist `degraded_turns` je Case aus.
 
 **P2 — Fault-Konsum.** `expected.fault_must_fire: true` erzwingt per Assertion
 `fault:consumed`, dass der scharfgeschaltete Fault wirklich gezündet hat
-(fehlgeschlagener SBO-Call auf dem Fault-Pfad ⇒ Event `fault_fired`; die
+(je nach Ziel: SBO-Call auf dem Fault-Pfad mit *Backend*-Fehler, `sbo_book`
+mit `terminStatus: "angefragt"` beim Ziel `service-booking`, oder ein
+fail-closed abgebrochenes Tool beim Ziel `customer` ⇒ Event `fault_fired`; die
 Entwaffnen-Antwort wird zusätzlich auf einen „war noch scharf"-Vorzustand
 geprüft ⇒ Event `fault_not_consumed`). `stop_session` entwaffnet einen noch
 scharfen Fault IMMER (leerer Body an den Hook), auch nach einem Crash — der
@@ -98,7 +100,24 @@ Runner ruft `stop_session` seit M3 im `finally`.
 Tenant), Tenant identisch neu anlegen. Buchungen kontaminieren keine
 Folge-Cases mehr; die Code-Fixtures des DMS-Mocks bleiben unberührt. Achtung:
 Szenarien, die einen VORBESTEHENDEN Termin brauchen (Storno/Verschiebung),
-dürfen `cross3_reset` nicht setzen.
+dürfen `cross3_reset` nur zusammen mit `cross3_seed` setzen (siehe unten).
+
+**P4 — Seed pro Case.** `initial_state.cross3_seed` (ein Objekt oder eine Liste)
+stellt den Ausgangszustand über `POST /api/admin/test-seed` her — NACH dem
+Reset. `{art: "termin", telefon, kunde, fahrzeug: {kennzeichen}, services}`
+legt einen vorbestehenden Termin an, `{art: "keine_slots", tage}` bucht den
+Terminraster leer. **Das Kennzeichen ist Pflicht und muss das Fahrzeug des
+erkannten Anrufers sein**: `sbo_get_my_appointments` filtert die Termine über
+die VIN des Anrufer-Fahrzeugs — ein Termin ohne bekanntes Fahrzeug ist für den
+Bot unsichtbar. Ein fehlgeschlagener Seed macht den Case zum ERROR statt still
+mit falscher Voraussetzung zu laufen.
+
+**P5 — Testisolation der Verifikationssperre.** CROSS3 zählt Verifikations-
+*Fehlversuche* prozessweit pro Betrieb+Anrufer (`server/platform/http-guard.mjs`,
+5 Versuche / 15 min). Weder `cross3_reset` noch die Case-Grenze leeren diesen
+Zähler. Szenarien, die absichtlich Budget verbrennen, tragen deshalb den Tag
+`verify_lockout` **und eine im Bestand einzigartige `caller_phone`**
+(`tests/test_fall_matrix_scenarios.py` erzwingt das).
 
 **Wall-Latenz.** Jeder Turn trägt zusätzlich echte Wanduhr-Millisekunden
 (`Turn.wall_latency_ms`, `LatencyMetrics.wall_avg/wall_p95_latency_ms`,
@@ -109,8 +128,19 @@ dürfen `cross3_reset` nicht setzen.
 
 Für Stufe-3-Fault-Tests nutzt der Adapter den admin-geschützten Hook
 `POST /api/admin/test-fault` (Bearer-Token aus `CROSS3_ADMIN_TOKEN`; nur im
-Mock-Modus aktiv). Body: `{path?, mode: timeout|500|401|409, once?}` schaltet
-scharf (Antwort enthält `armed`), leerer Body entwaffnet. Der Adapter schaltet
+Mock-Modus aktiv). Der Hook kennt drei Ziele (`server/routes/admin.mjs`):
+
+| `api` | Body | trifft |
+|---|---|---|
+| `sbo` (Default) | `{path?, mode: timeout\|500\|401\|409, once?}` | SBO v1 — u. a. `/appointment/cancel`, `/appointment/detail` |
+| `service-booking` | `{bookingConfirmed: false, sendOrderConfirmation?, once?}` | Premium Service Booking V1 — der **Buchungs-Schreibpfad** |
+| `customer` | `{mode: timeout\|500\|401, once?}` | Customer-V2-Lookup (`/customers/pageable-search`) — Anrufererkennung |
+
+Seit dem API-Umbau schreibt `sbo_book` über `createServiceBooking`; ein
+SBO-Fault auf `/appointment/book` trifft die Buchung **nicht** mehr. Ein harter
+Ausfall des Schreibpfads (timeout/500/409) ist derzeit gar nicht injizierbar —
+der Service-Booking-Mock kennt nur den Ergebnis-Override. Leerer Body
+entwaffnet alle Stellen. Der Adapter schaltet
 automatisch scharf, wenn ein Szenario `initial_state.cross3_fault` deklariert,
 validiert die Hook-Antwort und entwaffnet in `stop_session`. Ohne den Hook ist
 ein Fault-Szenario nicht aussagekräftig — mit `fault_must_fire` schlägt es dann

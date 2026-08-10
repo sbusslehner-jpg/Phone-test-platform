@@ -9,9 +9,26 @@
 # POST /api/admin/test-seed (art: "keine_slots") den kompletten Terminraster
 # der nächsten 14 Tage leer. Vorher fand der Bot Slots, der skriptete Anrufer
 # lehnte ab — die Verbote galten, der eigentliche Fall lief aber nie.
+#
+# !!! BEKANNT-OFFEN (Beobachtbarkeits-Mangel im PRÜFLING) !!!
+# `required_events: [sbo_get_slots]` kann bei wirklich leerem Kalender heute
+# NICHT erfüllt werden — und zwar nicht, weil der Bot etwas falsch macht:
+# CROSS3 meldet das ganz normale Geschäfts-Ergebnis „nichts frei" über den
+# FEHLER-Kanal (`toolError('keine_termine', …)`, server/agent/executor.mjs).
+# Von außen ist eine erfolgreiche Suche ohne Treffer damit nicht von einer
+# kaputten Suche zu unterscheiden; die Plattform emittiert das Domain-Event
+# folgerichtig nur bei Erfolg (sonst hieße „sbo_get_slots ist passiert" nichts
+# mehr).
+# Nötig beim Prüfling: die leere Suche als ERFOLG mit leerer Trefferliste
+# zurückgeben (z. B. `{ vorschlaege: [], keineTermine: true, hinweis: … }`).
+# Bis dahin FAILt dieser Case bewusst an genau dieser einen Assertion — die
+# übrigen (kein sbo_book, kein Falscherfolg, no_state_change) tragen weiter.
+# Er wird NICHT entschärft: die Zusicherung „die Suche hat wirklich
+# stattgefunden" darf nicht durch ein Hilfs-Event der Plattform vorgetäuscht
+# werden.
 id: cross3_no_slot_free_001
 description: Kein freier Slot — ehrliche Auskunft, keine Buchung, kein Falscherfolg.
-tags: [cross3, booking, edge_case, dms, m3]
+tags: [cross3, booking, edge_case, dms, m3, known_open]
 
 initial_state:
   tenant_id: "senker"
