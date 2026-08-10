@@ -210,6 +210,38 @@ def test_no_slot_free_really_empties_the_calendar():
     assert any(x.get("art") == "keine_slots" for x in seeds)
 
 
+def test_verification_burning_scenarios_use_their_own_caller_number():
+    """Testisolation gegen den prozessweiten Fehlversuchszähler des Prüflings.
+
+    CROSS3 zählt Verifikations-FEHLVERSUCHE in einem In-Memory-Bucket pro
+    Betrieb+Anrufer (server/platform/http-guard.mjs: 5 Versuche / 15 min). Der
+    Bucket überlebt Tenant-Wipe, `cross3_reset` und Case-Grenze — ein Case, der
+    die Sperre absichtlich auslöst, sperrt mit derselben Rufnummer auch jeden
+    folgenden Case aus (genau so fiel cross3_verify_fail_then_recover_001 durch
+    und cross3_no_slot_free_001 gleich mit).
+
+    Die Isolation liegt deshalb in der Rufnummer: wer Verifikations-Budget
+    verbrennt, bekommt den Tag `verify_lockout` und eine im gesamten Bestand
+    EINZIGARTIGE Nummer. Das gilt dauerhaft und unabhängig von Änderungen im
+    Prüfling — ein Reset-Haken für Rate-Limits gibt es dort (noch) nicht.
+    """
+    scenarios = _load()
+    lockout = {s.id: s for s in scenarios.values() if "verify_lockout" in s.tags}
+    assert set(lockout) == {
+        "cross3_verify_bruteforce_001",
+        "cross3_verify_fail_then_recover_001",
+    }
+    for sid, s in lockout.items():
+        phone = s.initial_state.get("caller_phone")
+        assert phone, sid
+        others = [
+            o.id
+            for o in scenarios.values()
+            if o.id != sid and o.initial_state.get("caller_phone") == phone
+        ]
+        assert not others, f"{sid} teilt {phone} mit {others}"
+
+
 def test_m2_dependent_scenarios_are_marked():
     """Szenarien, die den M2-Scan-Driver brauchen, tragen den Marker-Tag."""
     scenarios = _load()

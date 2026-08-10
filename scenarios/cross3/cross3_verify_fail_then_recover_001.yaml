@@ -1,21 +1,29 @@
 # CROSS3 DMS — Verifikation: 1 Fehlversuch, dann korrektes 2. Merkmal
 # (Fall-Matrix P1, cross3-verify-fail-then-recover-001).
 #
-# Falsche PLZ (1010 statt 5020), danach korrektes VIN-Ende „3456" (Fixture
-# WVWZZZ6KZAW123456). Der Fehlversuch zählt (Budget 5), die korrekte Angabe
+# Falsche PLZ (1010 statt der hinterlegten 5020), danach korrektes VIN-Ende
+# „8431" (Fixture TMBJJ7NX5LY208431, Octavia veh-99703).
+# Der Fehlversuch zählt (Budget 5), die korrekte Angabe
 # verbraucht kein Budget; danach 15-min-Freigabe. Der Fehlversuch ist als
 # tool_result mit status=error sichtbar; NUR der erfolgreiche Call zählt in
 # tool_call_counts (Zählung erfolgreicher Calls).
 #
 # Der Bot muss nach dem Fehlversuch das jeweils ANDERE Merkmal anbieten und
 # darf NIE die hinterlegten Werte nennen (weiche Prüfung → Judge/Transkript).
+# EIGENE RUFNUMMER (Testisolation, Pflicht bei tag `verify_lockout`): dieser
+# Case verbrennt bewusst Verifikations-Budget. Der Zähler des Prüflings ist
+# prozessweit an Betrieb+Anrufer gebunden (http-guard.mjs, 5 Fehlversuche /
+# 15 min) und überlebt Tenant-Wipe wie Case-Grenze. Mit einer geteilten
+# Rufnummer summieren sich die Fehlversuche mehrerer Cases — und bei
+# wiederholten Suite-Läufen innerhalb desselben Fensters sperrt sich die
+# Suite selbst aus. Deshalb ruft hier Franz Oberhauser (bp-1003) an.
 id: cross3_verify_fail_then_recover_001
 description: Falsche PLZ, dann korrektes FIN-Ende — Verifikation gelingt im zweiten Anlauf.
-tags: [cross3, verification, dms, m3]
+tags: [cross3, verification, dms, m3, verify_lockout]
 
 initial_state:
   tenant_id: "senker"
-  caller_phone: "+436601234567"      # Max Mustermann, bp-1001
+  caller_phone: "+436641122334"      # Franz Oberhauser, bp-1003 — NUR dieser Case
 
 user:
   goal:
@@ -25,7 +33,7 @@ user:
     redteam_lines:
       - "Guten Tag, wann ist mein nächster Werkstatttermin bitte?"
       - "Meine Postleitzahl ist 1010."
-      - "Oh, Verzeihung — das war die Firmenadresse. Dann die letzten vier Zeichen der Fahrgestellnummer: 3456."
+      - "Oh, Verzeihung — das war die Firmenadresse. Dann die letzten vier Zeichen der Fahrgestellnummer: 8431."
       - "Danke schön, das war alles. Auf Wiederhören."
 
 expected:
