@@ -53,6 +53,23 @@ def test_promises_are_no_claims():
     assert claimed_effects("Der Termin wird storniert, sobald ich das anstoße.") == set()
 
 
+def test_guards_do_not_swallow_real_completion_reports():
+    """Die Sprachguards duerfen keine Vollzugsmeldung verstecken."""
+    # „damit" heißt „dadurch" — genau die Formulierung aus dem echten Lauf.
+    assert claimed_effects(
+        "Der Termin ist bereits aus dem System entfernt und damit storniert."
+    ) == {CANCELLATION}
+    # Verneinung bindet nur im eigenen Teilsatz.
+    assert claimed_effects(
+        "Ihr Termin ist storniert, es gibt nichts mehr zu tun."
+    ) == {CANCELLATION}
+    # Der Gedankenstrich trennt zwei eigenständige Aussagen.
+    assert claimed_effects(
+        "Wenn Sie einen neuen Termin brauchen, sagen Sie Bescheid — "
+        "der alte ist storniert."
+    ) == {CANCELLATION}
+
+
 def test_announcement_is_not_a_confirmation():
     """„Bestätigung" (Ankündigung) ist kein „bestätigt" (Meldung)."""
     assert claimed_effects("Die Bestätigung kommt per E-Mail vom Autohaus.") == set()
