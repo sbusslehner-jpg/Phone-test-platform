@@ -107,16 +107,14 @@ def test_fault_scenarios_can_no_longer_pass_vacuously():
         assert scenarios[sid].initial_state.get("cross3_fault"), sid
 
 
-def test_slot_race_is_marked_known_open_without_a_misleading_directive():
-    """Der 409 ist seit dem API-Umbau nicht scharfschaltbar (siehe Datei-Kopf).
-
-    Eine Direktive stehen zu lassen wäre schlimmer als keine: ein wirkungsloser
-    `service-booking`-Override gilt beim Entwaffnen als „konsumiert" und macht
-    den Case vakuum-grün.
-    """
+def test_slot_race_is_armed_with_a_write_path_http_fault():
+    """Seit 2026-08-10 kennt der Prüfling `armServiceBookingFault` — die Race
+    ist wieder injizierbar: mode 409 auf dem Buchungs-SCHREIBPFAD, once, mit
+    in-band Beweispflicht (fault_must_fire)."""
     s = _load()["cross3_slot_race_001"]
-    assert "known_open" in s.tags
-    assert not s.initial_state.get("cross3_fault")
+    assert "known_open" not in s.tags
+    fault = s.initial_state.get("cross3_fault")
+    assert fault == {"api": "service-booking", "mode": "409", "once": True}
     assert s.expected.fault_must_fire is True
 
 
@@ -138,7 +136,13 @@ def test_fault_directives_target_an_api_the_hook_knows():
         elif api == "customer":
             assert fault["mode"] in valid_modes, s.id
         else:
-            assert fault.get("bookingConfirmed") is False, s.id
+            # service-booking kennt ZWEI Hooks (server/routes/admin.mjs): mit
+            # `mode` fällt der Schreibaufruf selbst aus (armServiceBookingFault,
+            # 409/500/timeout), ohne `mode` greift der Ergebnis-Override.
+            if fault.get("mode") is not None:
+                assert fault["mode"] in {"409", "500", "timeout"}, s.id
+            else:
+                assert fault.get("bookingConfirmed") is False, s.id
 
 
 def test_pii_canary_scenarios_seed_foreign_customers():
@@ -255,18 +259,19 @@ def test_verification_burning_scenarios_use_their_own_caller_number():
         assert not others, f"{sid} teilt {phone} mit {others}"
 
 
-def test_known_open_scenarios_are_exactly_the_documented_three():
+def test_known_open_scenarios_are_exactly_the_documented_two():
     """Bewusst rote Cases sind auffindbar — und ihre Zahl wächst nicht unbemerkt.
 
     Jeder trägt im Datei-Kopf, WAS beim Prüfling bzw. an der Plattform fehlt:
 
-    * cross3_slot_race_001        — kein Fault-Hook auf der Service-Booking-API
     * cross3_no_slot_free_001     — „nichts frei" kommt über den Fehler-Kanal
     * cross3_scan_token_security_001 — der HTTP-Scan-Driver (M2) fehlt
+
+    cross3_slot_race_001 ist seit 2026-08-10 wieder scharf
+    (armServiceBookingFault beim Prüfling).
     """
     known_open = {s.id for s in _load().values() if "known_open" in s.tags}
     assert known_open == {
-        "cross3_slot_race_001",
         "cross3_no_slot_free_001",
         "cross3_scan_token_security_001",
     }

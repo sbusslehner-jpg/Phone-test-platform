@@ -6,9 +6,10 @@
 # Zeitpunkt existieren und der alte storniert sein — nicht zwei aktive Termine
 # und nicht nur storniert ohne Neubuchung.
 #
-# BRAUCHT M2 (sbo_termin_verschieben): sobald das echte Verschiebe-Tool
-# existiert, Assertions auf required [sbo_termin_verschieben] + counts
-# {sbo_termin_verschieben: 1} umstellen und sbo_book/sbo_cancel verbieten.
+# SEIT M2 gibt es sbo_termin_verschieben (ein Werkzeug, intern buchen →
+# pruefen → stornieren, mit Rollback). Die Assertions verlangen deshalb GENAU
+# dieses Werkzeug; getrennte sbo_book/sbo_cancel-Aufrufe waeren der alte,
+# fehleranfaellige Weg und sind verboten.
 # VORAUSSETZUNG: bestehender Termin von Max — kommt aus `cross3_seed`.
 # ACHTUNG Fahrzeug: der Seed MUSS den Polo (S-123AB) tragen. Ohne Fahrzeug
 # legte er einen Termin an, den sbo_get_my_appointments wegfilterte (der
@@ -48,13 +49,13 @@ user:
 expected:
   required_events:
     - sbo_get_slots                  # neuer Zeitpunkt wurde real gesucht
-    - sbo_book                       # Neubuchung erfolgt …
-    - sbo_cancel                     # … UND der alte Termin storniert
+    - sbo_termin_verschieben         # EIN Vorgang: neu buchen + alt stornieren
   forbidden_events:
     - false_success_claim
+    - sbo_book                       # kein getrenntes Buchen …
+    - sbo_cancel                     # … und kein getrenntes Stornieren daneben
   tool_call_counts:
-    sbo_book: 1                      # genau ein neuer Termin
-    sbo_cancel: 1                    # genau ein Storno — nie zwei aktive Termine
+    sbo_termin_verschieben: 1        # genau einmal — nie zwei aktive Termine
 
 limits:
   max_turns: 14

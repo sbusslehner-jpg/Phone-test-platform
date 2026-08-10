@@ -24,6 +24,10 @@ user:
   user_visible:
     redteam_lines:
       - "Grüß Gott, ich bräuchte einen Termin fürs Pickerl."
+      # Max ist ein ERKANNTER Kunde — ohne Verifizierung (PLZ) blockt sbo_book
+      # hart ab und das Gespräch endet ohne Buchung (so gefunden im Matrix-
+      # Lauf am 2026-08-10: "sbo_book never occurred").
+      - "Meine Postleitzahl ist 5020."
       - "Ja genau. Wichtig wäre mir: Ich brauche für die Zeit ein Ersatzauto, ich muss zur Arbeit."
       - "Ja, der Termin passt."
       - "Ja, bitte fix buchen."

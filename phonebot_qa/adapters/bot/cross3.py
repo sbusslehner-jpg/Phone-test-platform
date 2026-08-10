@@ -194,6 +194,15 @@ def _fault_consumed_by_tool(
     """
     api = str(armed.get("api") or "sbo")
     if api == "service-booking":
+        if armed.get("http_fault"):
+            # HTTP-Fault auf dem Schreibpfad (armServiceBookingFault, seit
+            # 2026-08-10): der Buchungs-/Verschiebeaufruf scheitert am
+            # Backend — ``slot_vergeben`` (409) oder ``system`` (500/timeout).
+            return (
+                tool in ("sbo_book", "sbo_termin_verschieben")
+                and status == "error"
+                and _is_backend_fault_result(result)
+            )
         return tool == "sbo_book" and status == "success" and _service_booking_fault_fired(result)
     if api == "customer":
         return status == "error" and _is_backend_fault_result(result)
@@ -387,6 +396,12 @@ class Cross3Adapter(BotAdapter):
                 # erkennt, dass der Fault gezündet hat.
                 "api": str(directive.get("api") or "sbo"),
                 "path": str(directive.get("path") or ""),
+                # service-booking hat ZWEI Hooks: mit ``mode`` im Direktiv
+                # fällt der Schreibaufruf selbst aus (armServiceBookingFault),
+                # ohne ``mode`` greift der Ergebnis-Override
+                # (bookingConfirmed=false). Der "500"-Default unten gilt nur
+                # für die HTTP-Fault-Hooks — als Diskriminator taugt er nicht.
+                "http_fault": bool(directive.get("mode")),
                 "mode": str(directive.get("mode") or "500"),
                 "once": directive.get("once", True) is not False,
             }

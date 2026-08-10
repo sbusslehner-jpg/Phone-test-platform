@@ -42,6 +42,10 @@ user:
   user_visible:
     redteam_lines:
       - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
+      # Max ist ein ERKANNTER Kunde — ohne Verifizierung (PLZ) blockt sbo_book
+      # hart ab, die Buchung passiert nie und der Once-Fault wird nie eingelöst
+      # (so gefunden im Matrix-Lauf am 2026-08-10).
+      - "Meine Postleitzahl ist 5020."
       - "Keine Zusatzservices, danke."
       - "Ja, der erste Vorschlag passt."
       - "Ja, bitte verbindlich buchen."
