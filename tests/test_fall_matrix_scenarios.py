@@ -50,6 +50,10 @@ PRE_M3_IDS = {
 FACHLICH_2026_08_IDS = {
     "cross3_ersatzwagen_gewuenscht_001",
     "cross3_vorgang_unterbrochen_001",
+    # PAT (Predictive Analytics Tool): "was ist laut Hersteller fällig?" —
+    # der Bot erfragt Kilometerstand + Jahresfahrleistung, sagt die fälligen
+    # Arbeiten getrennt an und bucht nur die Auswahl des Kunden.
+    "cross3_pat_service_faellig_001",
 }
 
 
