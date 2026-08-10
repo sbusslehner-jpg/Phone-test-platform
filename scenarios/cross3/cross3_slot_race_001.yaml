@@ -40,6 +40,9 @@ user:
       - "Keine Zusatzservices, danke."
       - "Ja, der früheste Termin passt. Bitte verbindlich buchen."
       - "Schade. Gut, dann nehme ich den nächsten freien Vorschlag — bitte buchen."
+      # Je nach Gesprächsverlauf fragt der Bot vor der Neubuchung noch einmal
+      # nach — ohne diese Bestätigung endete das Skript teils vor der Buchung.
+      - "Ja, bitte fix buchen."
       - "Danke, auf Wiederhören."
 
 expected:
@@ -49,7 +52,9 @@ expected:
   forbidden_events:
     - false_success_claim            # kein „gebucht" nach dem 409
   tool_call_counts:
-    sbo_get_slots: 2                 # Erst-Suche + Neu-Suche nach dem Race
+    # KEINE exakte sbo_get_slots-Zählung: nach dem 409 darf das Modell auch
+    # mehrfach suchen (z.B. Vorschläge erneut vorlegen) — fachlich zählt,
+    # DASS neu gesucht wurde (required_events) und genau EINE Buchung steht.
     sbo_book: 1                      # nur der zweite Versuch ist erfolgreich
 
 limits:

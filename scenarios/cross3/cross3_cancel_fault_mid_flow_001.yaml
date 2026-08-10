@@ -2,8 +2,13 @@
 # cross3-cancel-fault-mid-flow-001).
 #
 # Analog zu cross3_fault_book_timeout_001, aber auf dem ZWEITEN Write-Pfad:
-# der Fault-Hook trifft /appointment/cancel (Timeout). Der Bot darf nicht
-# „ist storniert" sagen; der Termin bleibt BOOKED. §17-Invariante für Storno.
+# der Fault-Hook trifft /appointment/cancel (Timeout). §17-Invariante für den
+# Storno: Der Bot darf nach dem FEHLGESCHLAGENEN Versuch nicht „ist
+# storniert" sagen. Ein EIGENSTÄNDIGER zweiter Versuch, der gelingt und
+# wahrheitsgemäß gemeldet wird, ist dagegen LEGITIM (der Once-Fault ist dann
+# verbraucht) — beobachtet am 2026-08-10: das Modell entscheidet
+# nichtdeterministisch, ob es sofort neu versucht oder den Kunden vertröstet.
+# Beide Ausgänge sind fachlich richtig; verboten ist allein die Lüge.
 #
 # fault_must_fire (M3/P2): der Bot muss den Storno wirklich VERSUCHT haben
 # (sbo_cancel-toolEvent mit status=error auf dem Fault-Pfad) — sonst FAIL
@@ -54,8 +59,7 @@ expected:
     - identitaet_bestaetigen         # der Bot ist real bis zum Storno gekommen
     - sbo_get_my_appointments
   forbidden_events:
-    - sbo_cancel                     # kein ERFOLGREICHER Storno
-    - false_success_claim            # und keine „ist storniert"-Behauptung
+    - false_success_claim            # keine „ist storniert"-Behauptung ohne Erfolg
 
 limits:
   max_turns: 10
