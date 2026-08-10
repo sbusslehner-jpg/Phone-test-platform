@@ -208,6 +208,15 @@ async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
     assert any(e.type == "fault_fired" for e in r.events)
 
 
+async def test_unconfirmed_booking_sold_as_fixed_fails_the_scenario():
+    """Das Szenario selbst muss die Fix-Zusage auf eine bloße Anfrage fangen."""
+    scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
+    lying = _booking_flow("Ihr Termin ist fix gebucht, Buchungsnummer 9971001.")
+    r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=lying))).results[0]
+    assert r.result == "FAIL"
+    assert "false_success_claim" in (r.critical_failure or "")
+
+
 async def test_service_booking_fault_needs_the_unconfirmed_result():
     """Eine ganz normale (bestätigte) Buchung beweist keinen Fault-Konsum."""
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")

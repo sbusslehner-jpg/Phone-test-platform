@@ -29,8 +29,13 @@ user:
       - "Guten Tag, ich muss meinen Werkstatttermin leider stornieren."
       - "Meine Postleitzahl ist 5020."
       - "Ja, genau diesen Termin meine ich — bitte stornieren."
-      - "Ja, ich bin sicher. Bitte verbindlich stornieren."
-      - "Danke, das war alles. Auf Wiederhören."
+      # Realistische Rückfrage statt einer starren Storno-Wiederholung: die
+      # alte Zeile („Ja, ich bin sicher. Bitte verbindlich stornieren.") kam
+      # NACH der Erfolgsmeldung und trieb das Modell in einen zweiten,
+      # zwangsläufig fehlschlagenden Storno-Versuch — ein Kunstprodukt des
+      # Skripts, kein Bot-Verhalten.
+      - "Danke. Bekomme ich dazu noch eine Bestätigung per E-Mail?"
+      - "Alles klar, das war alles. Auf Wiederhören."
 
 expected:
   required_events:
