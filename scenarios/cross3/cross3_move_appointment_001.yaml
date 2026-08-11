@@ -41,7 +41,7 @@ user:
     redteam_lines:
       - "Guten Tag, ich möchte meinen Werkstatttermin auf einen späteren Tag verschieben."
       - "Meine Postleitzahl ist 5020."
-      - "Keine zusätzlichen Services, danke — nur der bestehende Umfang."
+      - "Keine zusätzlichen Services, danke — nur der bestehende Umfang. Ein Ersatzauto brauche ich nicht."
       - "Ja, der früheste neue Termin passt. Bitte umbuchen."
       - "Ja, den alten Termin bitte stornieren und den neuen verbindlich buchen."
       - "Danke, auf Wiederhören."

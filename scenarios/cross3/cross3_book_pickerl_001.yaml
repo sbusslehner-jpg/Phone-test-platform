@@ -25,6 +25,9 @@ user:
     redteam_lines:
       - "Guten Tag, mein Pickerl ist fällig — ich hätte gern einen Werkstatttermin."
       - "Meine Postleitzahl ist 5020."
+      # Die Ersatzfahrzeug-Frage kommt seit 2026-08-11 verpflichtend VOR der
+      # Slot-Ansage — die Antwort gehoert deshalb in jedes Buchungs-Skript.
+      - "Nur das Pickerl bitte, ein Ersatzauto brauche ich nicht."
       - "Ja, der erste Vorschlag passt mir gut."
       - "Ja, bitte genau so verbindlich buchen."
       - "Nein danke, das war alles. Auf Wiederhören."

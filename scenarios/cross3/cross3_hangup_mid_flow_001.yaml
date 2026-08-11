@@ -31,7 +31,7 @@ user:
       # mitten im Flow — direkt nach der Slot-Ansage des Bots.
       - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
       - "Meine Postleitzahl ist 5020."
-      - "Keine Zusatzservices, danke."
+      - "Keine Zusatzservices, danke — und ein Ersatzauto brauche ich nicht."
 
 expected:
   forbidden_events:

@@ -33,7 +33,7 @@ user:
       # Max ist ein ERKANNTER Kunde — die Verifizierung (PLZ) gehört VOR die
       # Unterbrechung: genau ihr Weiterleben danach prüft dieses Szenario.
       - "Meine Postleitzahl ist 5020."
-      - "Ja, das Pickerl bitte."
+      - "Ja, das Pickerl bitte — ein Ersatzauto brauche ich nicht."
       - "Moment, ich muss kurz weg — melde mich gleich wieder."
       - "So, bin wieder da. Der Termin, den Sie vorhin genannt haben, passt mir."
       - "Ja, bitte verbindlich buchen."

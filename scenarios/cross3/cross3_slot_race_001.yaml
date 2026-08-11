@@ -37,7 +37,7 @@ user:
       - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
       # Max ist ein ERKANNTER Kunde — ohne Verifizierung (PLZ) blockt sbo_book.
       - "Meine Postleitzahl ist 5020."
-      - "Keine Zusatzservices, danke."
+      - "Keine Zusatzservices, danke — und ein Ersatzauto brauche ich nicht."
       - "Ja, der früheste Termin passt. Bitte verbindlich buchen."
       - "Schade. Gut, dann nehme ich den nächsten freien Vorschlag — bitte buchen."
       # Je nach Gesprächsverlauf fragt der Bot vor der Neubuchung noch einmal

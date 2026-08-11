@@ -45,7 +45,7 @@ user:
     # gemacht hätte.
     redteam_lines:
       - "Guten Tag, ich bin neu bei Ihnen — ich hätte gern einen Service-Termin für meinen VW Golf, Kennzeichen S-741ZZ."
-      - "Ja, bitte das Service laut Herstellervorschrift, sonst nichts."
+      - "Ja, bitte das Service laut Herstellervorschrift, sonst nichts. Ein Ersatzauto brauche ich nicht."
       - "Gerne: Anna Neumann, Telefon +43 660 8887766, E-Mail anna.neumann@example.com, Ahornweg 3, 5023 Salzburg."
       - "Ja, der früheste Termin passt gut."
       - "Ja, das stimmt so — bitte verbindlich buchen."

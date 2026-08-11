@@ -46,7 +46,7 @@ user:
       # hart ab, die Buchung passiert nie und der Once-Fault wird nie eingelöst
       # (so gefunden im Matrix-Lauf am 2026-08-10).
       - "Meine Postleitzahl ist 5020."
-      - "Keine Zusatzservices, danke."
+      - "Keine Zusatzservices, danke — und ein Ersatzauto brauche ich nicht."
       - "Ja, der erste Vorschlag passt."
       - "Ja, bitte verbindlich buchen."
       - "Alles klar, danke. Auf Wiederhören."
