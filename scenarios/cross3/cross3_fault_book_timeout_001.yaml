@@ -47,8 +47,10 @@ user:
       # (so gefunden im Matrix-Lauf am 2026-08-10).
       - "Meine Postleitzahl ist 5020."
       - "Keine Zusatzservices, danke — und ein Ersatzauto brauche ich nicht."
-      - "Ja, der erste Vorschlag passt."
-      - "Ja, bitte verbindlich buchen."
+      # EINE Bestätigung statt zwei: Auf "passt" bucht das Modell bereits;
+      # ein zweites "bitte buchen" danach erzeugte einen zweiten (idempotent
+      # beantworteten) sbo_book-Erfolg und riss die Genau-1-Zählung.
+      - "Ja, der erste Vorschlag passt — bitte verbindlich buchen."
       - "Alles klar, danke. Auf Wiederhören."
 
 expected:
