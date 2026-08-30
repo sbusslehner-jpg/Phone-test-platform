@@ -21,9 +21,21 @@ jobs:
       - name: Install
         run: pip install -e ".[api,db,dev]"
       - name: Unit tests
-        run: pytest -q
+        # `python -m pytest` statt `pytest`: Nur die Modulform legt das
+        # Wurzelverzeichnis auf sys.path. Mit dem blossen Skript scheiterte JEDE
+        # Testdatei beim Einsammeln an `from tests.conftest import ...`
+        # (ModuleNotFoundError: No module named 'tests') — die CI stand damit
+        # seit dem 2026-08-10 auf jedem Branch rot, ohne je einen Test gefahren
+        # zu haben. Lokal fiel es nicht auf, weil man dort `python -m pytest`
+        # tippt.
+        run: python -m pytest -q
       - name: Core scenarios + regression gate (fast text tests)
-        run: phonebot-qa run --suite all --junit report.xml
+        # --skip-tag cross3: `scenarios/cross3/` gehoert zu einem ANDEREN Bot
+        # (dem CROSS3-DMS-Agenten, siehe docs/TESTING_CROSS3.md). Gegen den
+        # eingebauten Referenz-Bot gefahren scheitern alle 22 davon — er kennt
+        # weder Werkstatt-Termine noch Ersatzmobilitaet. Sie gehoeren in den
+        # CROSS3-Lauf (`--bot cross3` bzw. `cross3-voice`), nicht in dieses Tor.
+        run: phonebot-qa run --suite all --skip-tag cross3 --junit report.xml
       - name: Red-team suite
         run: phonebot-qa redteam
       - name: Automatic test discovery (§23)

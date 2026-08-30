@@ -373,6 +373,22 @@ class Cross3Adapter(BotAdapter):
             caller_phone=str(state.get("caller_phone") or ""),
             history=[],  # CROSS3 chat is stateless — we hold the history
         )
+        session.state["armed_fault"] = await self.prepare_case(state, tenant_id)
+        return session
+
+    async def prepare_case(self, state: dict[str, Any], tenant_id: str) -> dict[str, Any] | None:
+        """Ausgangszustand fuer EINEN Case herstellen: Reset, Seed, Fault.
+
+        Oeffentlich, weil der Telefonpfad dasselbe braucht: ``Cross3VoiceRunner``
+        faehrt keinen BotAdapter, aber ``cross3_reset``/``cross3_seed``/
+        ``cross3_fault`` sollen dort dasselbe bedeuten wie im Text. Bis 2026-08-30
+        stand die Logik nur hier — mit dem Ergebnis, dass ein Voice-Szenario mit
+        ``cross3_reset: true`` NICHTS zuruecksetzte und Buchungen aus frueheren
+        Cases stillschweigend mitzaehlten.
+
+        Rueckgabe: das scharf gemachte Fault-Direktiv (fuer die Konsum-Pruefung)
+        oder ``None``.
+        """
         # State-Reset pro Case (M3/P3): Buchungen aus früheren Cases dürfen
         # Folge-Cases nicht kontaminieren. Szenario-Feld gewinnt über den
         # Adapter-Default.
@@ -385,28 +401,29 @@ class Cross3Adapter(BotAdapter):
         # Optional fault injection (§17). Requires the admin-guarded test-fault
         # hook in cross3-dms-agent. Inert if the scenario declares none.
         fault = state.get("cross3_fault")
-        if fault:
-            directive = dict(fault) if isinstance(fault, dict) else {}
-            # Merken für die Konsum-Prüfung (M3/P2): auch mit gestubbtem
-            # Transport, damit die in-band-Erkennung unit-testbar ist.
-            session.state["armed_fault"] = {
-                # Ziel des Hooks (server/routes/admin.mjs): "sbo" (Default),
-                # "service-booking" (Buchungs-Schreibpfad) oder "customer"
-                # (CRM-Lookup). Davon hängt ab, WORAN der Adapter in-band
-                # erkennt, dass der Fault gezündet hat.
-                "api": str(directive.get("api") or "sbo"),
-                "path": str(directive.get("path") or ""),
-                # service-booking hat ZWEI Hooks: mit ``mode`` im Direktiv
-                # fällt der Schreibaufruf selbst aus (armServiceBookingFault),
-                # ohne ``mode`` greift der Ergebnis-Override
-                # (bookingConfirmed=false). Der "500"-Default unten gilt nur
-                # für die HTTP-Fault-Hooks — als Diskriminator taugt er nicht.
-                "http_fault": bool(directive.get("mode")),
-                "mode": str(directive.get("mode") or "500"),
-                "once": directive.get("once", True) is not False,
-            }
-            await self._arm_fault(directive)
-        return session
+        if not fault:
+            return None
+        directive = dict(fault) if isinstance(fault, dict) else {}
+        # Merken für die Konsum-Prüfung (M3/P2): auch mit gestubbtem
+        # Transport, damit die in-band-Erkennung unit-testbar ist.
+        armed = {
+            # Ziel des Hooks (server/routes/admin.mjs): "sbo" (Default),
+            # "service-booking" (Buchungs-Schreibpfad) oder "customer"
+            # (CRM-Lookup). Davon hängt ab, WORAN der Adapter in-band
+            # erkennt, dass der Fault gezündet hat.
+            "api": str(directive.get("api") or "sbo"),
+            "path": str(directive.get("path") or ""),
+            # service-booking hat ZWEI Hooks: mit ``mode`` im Direktiv
+            # fällt der Schreibaufruf selbst aus (armServiceBookingFault),
+            # ohne ``mode`` greift der Ergebnis-Override
+            # (bookingConfirmed=false). Der "500"-Default unten gilt nur
+            # für die HTTP-Fault-Hooks — als Diskriminator taugt er nicht.
+            "http_fault": bool(directive.get("mode")),
+            "mode": str(directive.get("mode") or "500"),
+            "once": directive.get("once", True) is not False,
+        }
+        await self._arm_fault(directive)
+        return armed
 
     async def _reset_tenant(self, tenant_id: str) -> None:
         """CROSS3-Tenant sauber neu aufsetzen (M3/P3).

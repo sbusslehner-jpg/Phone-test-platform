@@ -129,21 +129,53 @@ class Cross3VoicePhoneClient:
         }
         await self._ws.send(json.dumps(start))
 
-    async def send_audio(self, audio: bytes | AudioBuffer) -> None:
-        """Stream caller audio to the bot as 20 ms SLIN binary frames."""
+    async def send_audio(
+        self,
+        audio: bytes | AudioBuffer,
+        *,
+        paced: bool = True,
+        trailing_silence_ms: int = 800,
+    ) -> None:
+        """Stream caller audio to the bot the way a phone line does.
+
+        Two properties of a real line matter, and getting either wrong makes the
+        bot look broken when it is not:
+
+        * **Pacing.** A carrier delivers 20 ms of audio every 20 ms. Bursting a
+          three-second utterance into the socket in a few milliseconds means the
+          server-side VAD sees the whole utterance at once and then *nothing* —
+          no silence, no continuation. With ``semantic_vad`` it then waits its
+          full window (up to 8 s on ``eagerness: low``) for audio that never
+          comes.
+        * **Trailing silence.** Silence on a phone line is still audio. When the
+          client simply stops sending, endpointing has nothing to detect.
+
+        Measured against CROSS3 on 2026-08-30: bursting with no trailing silence
+        produced **one** model response — the greeting — in a 66-second call with
+        three caller utterances. With pacing and trailing silence the same call
+        produced four.
+
+        Pass ``paced=False`` for the old burst behaviour (useful when a test
+        deliberately floods the input buffer).
+        """
         if self._ws is None:
             raise RuntimeError("connect() first")
         pcm = audio.to_bytes() if isinstance(audio, AudioBuffer) else bytes(audio)
+        if trailing_silence_ms > 0:
+            pcm += b"\x00" * (SLIN_SAMPLE_RATE * 2 * trailing_silence_ms // 1000)
+        if paced:
+            await self._send_paced(pcm)
+            return
         for i in range(0, len(pcm), SLIN_FRAME_BYTES):
             await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
 
     async def _send_paced(self, pcm: bytes, *, on_first=None) -> None:
         """Stream caller audio as *wall-clock-paced* 20 ms SLIN frames.
 
-        Unlike :meth:`send_audio` (which bursts every frame into the socket as
-        fast as the OS accepts it), this sleeps 20 ms between frames so the
-        interrupt reaches the bot in real time. Barge-in stop latency then
-        measures the app's actual reaction — not how fast a send buffer drains.
+        This sleeps 20 ms between frames so the audio reaches the bot in real
+        time — the same pacing a carrier applies. Barge-in stop latency then
+        measures the app's actual reaction, not how fast a send buffer drains.
+        :meth:`send_audio` delegates here unless a test asks for a burst.
         ``on_first`` fires just before the first frame goes out: the instant the
         caller starts talking over the bot. Cancel the task to stop early (the
         app acknowledged with ``clear``, so there is no need to keep talking).
@@ -156,7 +188,23 @@ class Cross3VoicePhoneClient:
                 if on_first is not None:
                     on_first()
                 first = False
-            await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
+            try:
+                await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
+            except Exception:
+                # Die Gegenseite hat aufgelegt oder umgelegt, WÄHREND der
+                # Anrufer noch sprach. Am Telefon ist das ein normaler Ausgang
+                # — genau der Fall "ich verbinde Sie" mitten im Satz —, kein
+                # Fehler des Läufers. Aufhören zu senden und zurückkehren: den
+                # transfer-/hangup-Rahmen liest ``next_bot_turn`` aus dem
+                # Empfangspuffer, wo er schon liegt.
+                #
+                # Vor der Taktung fiel das nie auf: Die ganze Äusserung war in
+                # Millisekunden im Socket, bevor die Gegenseite reagieren
+                # konnte. Mit echtem Zeitverhalten dauert sie Sekunden, und das
+                # Rennen ist real — der Weiterleitungs-Test flatterte in 2 von
+                # 6 Läufen mit "ConnectionClosedOK" statt eines transfer.
+                self.ended = True
+                return
             await asyncio.sleep(SLIN_FRAME_MS / 1000.0)
 
     async def next_bot_turn(self, *, quiet_ms: int = 600, max_ms: int = 20000) -> BotTurn:
@@ -166,6 +214,19 @@ class Cross3VoicePhoneClient:
         gap of ``quiet_ms`` with no further audio (Azure's semantic-VAD pacing),
         a ``clear`` (barge-in), or a ``hangup``/``stop``/close. ``max_ms`` bounds
         the wait so a stuck stream cannot hang the test.
+
+        **The gap is measured against PLAYBACK, not arrival.** The app pushes a
+        finished sentence into the socket far faster than 8 kHz real time; a
+        caller on a real line is still listening to it long after the last byte
+        arrived. Ending the turn at "socket idle for 600 ms" therefore hands
+        control back while the bot is, from the caller's side, still mid-
+        sentence — and every scripted line then lands as a barge-in.
+
+        Measured against CROSS3 on 2026-08-30: a four-turn call produced FOUR
+        barge-ins and 24 seconds of discarded bot audio in 31 seconds of call.
+        No booking could ever complete, because the caller talked over every
+        question. Waiting out the playback fixes that without slowing down
+        anything that really is silent.
         """
         import asyncio
 
@@ -176,6 +237,14 @@ class Cross3VoicePhoneClient:
         loop = asyncio.get_event_loop()
         started_at = loop.time()
         deadline = started_at + max_ms / 1000.0
+
+        def rest_der_wiedergabe() -> float:
+            """Sekunden, die der Anrufer noch zuhoert (0, wenn er durch ist)."""
+            if not chunks:
+                return 0.0
+            gespielt = loop.time() - (started_at + (turn.first_audio_latency_ms or 0) / 1000.0)
+            gesendet = sum(len(c) for c in chunks) / (SLIN_SAMPLE_RATE * 2)
+            return max(0.0, gesendet - gespielt)
 
         while True:
             remaining = deadline - loop.time()
@@ -188,8 +257,13 @@ class Cross3VoicePhoneClient:
             except asyncio.TimeoutError:
                 # Quiet gap: end of this bot turn (only if we already got audio;
                 # otherwise keep waiting up to max_ms for the turn to start).
-                if chunks:
+                if not chunks:
+                    continue
+                rest = rest_der_wiedergabe()
+                if rest <= 0:
                     break
+                # Noch nicht: der Anrufer hoert die letzten Sekunden erst.
+                budget_recv_timeout = min(rest, remaining)
                 continue
             except Exception:
                 turn.ended = True
@@ -200,6 +274,7 @@ class Cross3VoicePhoneClient:
                 if not chunks:
                     turn.first_audio_latency_ms = int((loop.time() - started_at) * 1000)
                 chunks.append(bytes(msg))
+                budget_recv_timeout = quiet_ms / 1000.0
                 continue
 
             # Text control frame.

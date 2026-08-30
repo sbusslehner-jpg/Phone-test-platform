@@ -173,6 +173,33 @@ async def test_barge_in_sla_breach_fails():
     assert "barge_in_sla" in (r.critical_failure or "")
 
 
+async def test_barge_in_at_turn_interrupts_that_turn_not_the_greeting():
+    """``at_turn`` entscheidet, WELCHE Aeusserung unterbrochen wird.
+
+    Bis 2026-08-30 traf die Unterbrechung immer die Begruessung. Ein Szenario
+    wie „Barge-in in der Slot-Ansage" sprach seinen Einwand („Nein, lieber
+    Donnerstag") damit als ERSTEN Satz an den Bot — es pruefte etwas, das
+    niemand gemeint hat, und der Rest des Gespraechs lief ins Leere.
+    """
+    async with _Server() as srv:
+        scn = _scenario(
+            "AT997-bargein",
+            lines=["Ich haette gern einen Termin.", "Ja, passt.", "Danke, auf Wiederhoeren."],
+            audio={
+                "profile": "clean",
+                "barge_in": {"interrupt_after_ms": 30, "at_turn": 2},
+                "barge_in_sla_ms": 300,
+            },
+        )
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    unterbrechungen = [e for e in r.events if e.type == "interrupt_start"]
+    assert unterbrechungen, "keine Unterbrechung ausgeloest"
+    assert all(e.turn == 2 for e in unterbrechungen), [
+        (e.turn, e.payload) for e in unterbrechungen
+    ]
+
+
 async def test_hangup_ends_the_call():
     async with _Server() as srv:
         scn = _scenario("AT997-hangup", lines=["Auf Wiederhören."])
@@ -206,6 +233,33 @@ async def test_transfer_ends_the_call():
     # A hand-off to a human is a transfer event, not a spurious run error.
     assert any(e.type == "transfer" for e in r.events)
     assert not any(e.type == "run_error" for e in r.events)
+
+
+async def test_transfer_waehrend_der_anrufer_spricht_ist_kein_laeuferfehler():
+    """Umlegen mitten im Satz ist ein normaler Ausgang, kein ``run_error``.
+
+    Seit der Anrufer in Echtzeit spricht, dauert eine Aeusserung Sekunden statt
+    Millisekunden — und die Gegenseite kann mitten hinein auflegen oder
+    umlegen. Genau das ist der Fall "ich verbinde Sie". Vorher riss der Sendeweg
+    dabei mit ``ConnectionClosedOK`` ab und der ganze Lauf wurde zum Fehler; der
+    ``transfer``-Rahmen lag ungelesen im Empfangspuffer (2 von 6 Laeufen).
+    """
+    async with _Server() as srv:
+        # Lange Aeusserung: Das Senden dauert sicher laenger, als der Server
+        # zum Umlegen braucht — das Rennen ist damit kein Zufall mehr.
+        scn = _scenario(
+            "AT997-transfer",
+            lines=[
+                "Guten Tag, ich haette da eine laengere Frage und moechte "
+                "deswegen bitte gleich einen Mitarbeiter sprechen, danke."
+            ],
+        )
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    assert any(e.type == "transfer" for e in r.events), [e.type for e in r.events]
+    assert not any(e.type == "run_error" for e in r.events), [
+        e.payload for e in r.events if e.type == "run_error"
+    ]
 
 
 async def test_greeting_hangup_is_not_a_run_error():

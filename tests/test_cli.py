@@ -53,3 +53,20 @@ def test_run_writes_json_report(tmp_path):
 
 def test_list_command():
     assert main(["list", "--suite", "all", "--scenarios-dir", _SD]) == 0
+
+
+def test_skip_tag_laesst_voice_szenarien_weg():
+    """``run`` faehrt Text — ein Telefon-Szenario kann dort nicht bestehen."""
+    from argparse import Namespace
+
+    from phonebot_qa.cli import _skip_tags
+
+    class S:
+        def __init__(self, sid, tags):
+            self.id, self.tags = sid, tags
+
+    alle = [S("a", ["cross3", "voice"]), S("b", ["cross3"]), S("c", None)]
+    behalten = _skip_tags(alle, Namespace(skip_tag=["voice"]))
+    assert [s.id for s in behalten] == ["b", "c"]
+    # Ohne Angabe bleibt alles, wie es war.
+    assert _skip_tags(alle, Namespace(skip_tag=None)) is alle

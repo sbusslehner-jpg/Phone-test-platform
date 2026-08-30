@@ -1,0 +1,47 @@
+# CROSS3 DMS — Telefon: Der Anrufer will einen Menschen sprechen.
+#
+# Am Telefon ist die Übergabe ein anderer Vorgang als im Chat: Dort entsteht ein
+# Eintrag im Posteingang, hier muss die Leitung wirklich umgelegt werden — die
+# Brücke schickt {"type":"transfer", to} an das Relay, und der Anruf endet.
+# Genau das prüft dieser Fall, und zwar an dem, was das Relay sieht.
+#
+# Nicht geprüft wird hier die zweite, stille Gefahr: Wird zu früh umgelegt, hört
+# der Anrufer den Satz „Ich verbinde Sie" nicht mehr zu Ende, weil der
+# Abspielpuffer des Relays dem Auflegen hinterherläuft. Das ist eine Frage von
+# Millisekunden im Nachlauf und gehört an den Vertragstest in CROSS3 selbst
+# (test/contract/telefon-bargein.test.mjs, „Auflegen erst nach dem letzten
+# Wort"); von aussen ist es nicht verlässlich messbar.
+id: cross3_voice_uebergabe_mensch_001
+description: Anrufer wünscht einen Mitarbeiter — die Brücke legt die Leitung um, nicht der Posteingang.
+tags: [cross3, voice, uebergabe, dms]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"      # Max Mustermann (bekannt, verifizierbar)
+  did: "+43720273834"                # DID → Tenant senker
+  cross3_reset: true
+
+user:
+  goal:
+    type: talk_to_human
+    person: "Markus Hofer"
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, ich möchte bitte mit Herrn Hofer sprechen."
+      - "Es geht um ein Geräusch beim Bremsen, das erkläre ich lieber selbst."
+      - "Ja bitte, verbinden Sie mich."
+
+audio:
+  profile: clean
+  sample_rate: 8000
+
+expected:
+  required_events:
+    - transfer                       # die Leitung wurde wirklich umgelegt
+  forbidden_events:
+    - false_success_claim            # keine Zusage, die niemand einlöst
+
+limits:
+  max_turns: 8
+  max_duration_seconds: 180

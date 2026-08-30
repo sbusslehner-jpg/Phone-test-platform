@@ -13,9 +13,25 @@
 # die DID gehört zum Tenant senker (Fixture +43720273834). Braucht ein echtes
 # Azure-Realtime-Deployment + RELAY_TOKEN.
 #
-# Braucht M2 (state_reader auf den SBO-Mock): „gebuchter Slot == nach der
-# Unterbrechung gewählter Slot" ist über den Voll-Duplex-Relay nicht sichtbar
-# und wird nach dem Anruf aus dem SBO-Mock gelesen.
+# Was dieser Fall NICHT prüft, und warum:
+#
+# Ursprünglich forderte er `required_events: [sbo_book]`. Das konnte nie
+# zutreffen — der Relay leitet keine Werkzeug-Aufrufe durch, sie laufen in der
+# Brücke. Der Fall war strukturell rot und sah wie ein Bot-Fehler aus.
+#
+# Den Bestand kann die Plattform inzwischen lesen (GET /api/admin/test-state,
+# `--admin-token`), die Zusicherung „am Ende ist genau einmal gebucht" wäre also
+# formulierbar. Sie steht trotzdem nicht hier: Der Anrufer ist SKRIPTET, und
+# eine Buchung braucht fünf bis sieben Antworten auf Fragen, deren Reihenfolge
+# das Modell von Lauf zu Lauf ändert (gemessen 2026-08-30: dreimal derselbe
+# Anruf, dreimal ein anderer Fragen-Baum). Ein starrer Anrufer landet dann
+# zwangsläufig neben der Frage — und der Fall wäre dauerhaft rot aus einem
+# Grund, der mit dem Bot nichts zu tun hat.
+#
+# Geprüft wird deshalb, wofür der Fall da ist: dass die Unterbrechung binnen
+# 300 ms ankommt (voice:barge_in_sla, kritisch) und dass der Bot nichts zusagt,
+# was er nicht gebucht hat. Die Buchungs-Zusicherung gehört an ein Szenario mit
+# einem Anrufer, der auf Fragen eingehen kann.
 id: cross3_voice_barge_in_slot_announce_001
 description: Barge-in in der Slot-Ansage der echten CROSS3-Bridge — clear ≤ 300 ms, gewählter Slot zählt.
 tags: [cross3, voice, barge_in, dms, m3]
@@ -35,10 +51,14 @@ user:
     redteam_lines:
       - "Guten Tag, ich möchte einen Pickerl-Termin buchen."
       - "Meine Postleitzahl ist 5020."
-      - "Keine Zusatzservices, danke."
-      # Diese Zeile ist der Barge-in: sie wird in die laufende Slot-Ansage
-      # gesprochen (audio.barge_in.utterance greift denselben Text).
-      - "Nein, warten Sie — lieber am Donnerstag. Geht das?"
+      # Die Zeilen folgen dem Ablauf, den der Bot am 2026-08-30 wirklich gefahren
+      # ist: erkannt an der Rufnummer, Verifikation ueber die PLZ, dann die
+      # Ersatzfahrzeug-Frage — die VOR jeder Terminansage beantwortet sein muss
+      # (fachliche Vorgabe: Ersatzmobilitaet ist tagesgebunden und knapp).
+      # Erst danach sagt er Slots an. GENAU da faellt der Anrufer ihm ins Wort;
+      # die Unterbrechung steht deshalb in audio.barge_in, nicht hier — stuende
+      # sie hier, spraeche der Anrufer sie ein zweites Mal.
+      - "Nein danke, ein Ersatzfahrzeug brauche ich nicht."
       - "Ja, genau der. Bitte verbindlich buchen."
       - "Danke, auf Wiederhören."
 
@@ -46,15 +66,19 @@ audio:
   profile: clean
   sample_rate: 8000                  # CROSS3-Relay spricht SLIN 8 kHz
   barge_in:
+    at_turn: 3                       # in die Antwort auf „keine Zusatzservices" —
+                                     # das ist die Slot-Ansage. Ohne at_turn traf
+                                     # die Unterbrechung immer die BEGRUESSUNG:
+                                     # „Nein, warten Sie — lieber am Donnerstag"
+                                     # als erster Satz an den Bot, und der Fall
+                                     # pruefte etwas, das niemand gemeint hat.
     interrupt_after_ms: 1200         # mitten in der Slot-Ansage
     utterance: "Nein, warten Sie — lieber am Donnerstag. Geht das?"
   barge_in_sla_ms: 300               # Konzept §14: clear-Frame binnen 300 ms
 
 expected:
-  required_events:
-    - sbo_book                       # am Ende IST gebucht (der gewählte Slot)
   forbidden_events:
-    - false_success_claim
+    - false_success_claim            # keine Terminzusage ohne Werkzeug-Beleg
 
 limits:
   max_turns: 12
