@@ -1,0 +1,41 @@
+# CROSS3 DMS — Telefon: Der Agent legt auf, nachdem er ausgesprochen hat.
+#
+# Am Telefon ist das Auflegen ein eigener Vorgang: Die Brücke schickt
+# {"type":"hangup"} an das Relay, und die Leitung fällt. Der Fehler, den dieser
+# Fall abfängt, ist ein zeitlicher — `response.done` heisst „fertig ERZEUGT",
+# nicht „fertig gesprochen". Azure liefert die Antwort drei- bis viermal
+# schneller als Echtzeit; im Puffer des Relays liegt alles, was noch nicht
+# gespielt wurde. Wer nach einem festen Nachlauf auflegt, schneidet ausgerechnet
+# den Abschiedssatz ab — den Satz, an den sich der Anrufer erinnert.
+id: cross3_voice_verabschiedung_001
+description: Der Anrufer verabschiedet sich — die Leitung fällt erst nach dem letzten Wort.
+tags: [cross3, voice, hangup, dms]
+
+initial_state:
+  tenant_id: "senker"
+  caller_phone: "+436601234567"
+  did: "+43720273834"
+  cross3_reset: true
+
+user:
+  goal:
+    type: general_info
+  persona: normal
+  user_visible:
+    redteam_lines:
+      - "Guten Tag, haben Sie am Samstag offen?"
+      - "Danke, das war alles. Auf Wiederhören."
+
+audio:
+  profile: clean
+  sample_rate: 8000
+
+expected:
+  required_events:
+    - hangup                         # der Agent beendet, nicht der Anrufer
+  forbidden_events:
+    - false_success_claim
+
+limits:
+  max_turns: 6
+  max_duration_seconds: 120

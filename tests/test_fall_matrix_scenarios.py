@@ -56,6 +56,20 @@ FACHLICH_2026_08_IDS = {
     "cross3_pat_service_faellig_001",
 }
 
+# Der Telefonkanal, gemessen 2026-08-30. Bis dahin gab es genau ein
+# Voice-Szenario (barge_in_slot_announce) — der Kanal mit der geringsten
+# Fehlertoleranz war der am schwaechsten geprueste. Diese drei decken ab, was
+# nur am Telefon schiefgehen kann: die Weiterleitung an einen Menschen (im Chat
+# gibt es keinen Hoerer weiterzureichen), die Verabschiedung (nur hier legt
+# jemand auf, und ein zu frueh gekapptes Wort ist ein abgeschnittener Satz) und
+# der unbekannte Anrufer (die Rufnummer ist der einzige Ausweis, den Telefonie
+# kennt).
+VOICE_2026_08_IDS = {
+    "cross3_voice_uebergabe_mensch_001",
+    "cross3_voice_verabschiedung_001",
+    "cross3_voice_unbekannter_anrufer_001",
+}
+
 
 def _load():
     return {s.id: s for s in load_scenarios(CROSS3_DIR)}
@@ -65,7 +79,7 @@ def test_all_cross3_scenarios_load_without_errors():
     scenarios = _load()
     assert P1_IDS <= set(scenarios), sorted(P1_IDS - set(scenarios))
     assert PRE_M3_IDS <= set(scenarios)
-    assert set(scenarios) == P1_IDS | PRE_M3_IDS | FACHLICH_2026_08_IDS
+    assert set(scenarios) == P1_IDS | PRE_M3_IDS | FACHLICH_2026_08_IDS | VOICE_2026_08_IDS
 
 
 def test_every_scenario_has_deterministic_assertions_first():
