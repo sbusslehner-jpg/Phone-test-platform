@@ -64,7 +64,14 @@ class Cross3VoiceRunner:
     ) -> None:
         self.client_factory = client_factory
         self.stt = stt
-        self.user_tts = user_tts or DeterministicTTS(voice="caller")
+        # Der Anrufer muss WIRKLICH sprechen. DeterministicTTS erzeugt eine
+        # Summe von Sinusschwingungen mit sprachähnlicher Hüllkurve — richtig
+        # für Barge-in-Timing, wertlos gegenüber einem echten STT: Azure
+        # transkribiert daran kein Wort, die Turn-Erkennung sieht nie ein
+        # Äusserungsende, und der Agent antwortet gar nicht (gemessen
+        # 2026-08-30: eine Antwort in 66 Sekunden bei drei Anrufersätzen).
+        # Deshalb die Systemstimme, wenn eine erreichbar ist.
+        self.user_tts = user_tts or _bester_caller_tts()
         self.state_reader = state_reader
         self.quiet_ms = quiet_ms
 
@@ -303,3 +310,22 @@ async def run_cross3_voice_suite(
                 )
             )
     return summarize(results, bot_version)
+
+
+def _bester_caller_tts():
+    """Systemstimme, wenn vorhanden — sonst der Simulator mit klarer Warnung."""
+    from ..audio.system_tts import SystemTTS, SystemTTSUnavailable
+
+    try:
+        return SystemTTS()
+    except SystemTTSUnavailable as exc:
+        import warnings
+
+        warnings.warn(
+            f"{exc} Voice-Szenarien laufen mit DeterministicTTS — gegen einen "
+            "echten Sprachdienst antwortet der Bot darauf nicht, und die "
+            "Ergebnisse sagen nichts über seine Gesprächsführung.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return DeterministicTTS(voice="caller")

@@ -129,21 +129,53 @@ class Cross3VoicePhoneClient:
         }
         await self._ws.send(json.dumps(start))
 
-    async def send_audio(self, audio: bytes | AudioBuffer) -> None:
-        """Stream caller audio to the bot as 20 ms SLIN binary frames."""
+    async def send_audio(
+        self,
+        audio: bytes | AudioBuffer,
+        *,
+        paced: bool = True,
+        trailing_silence_ms: int = 800,
+    ) -> None:
+        """Stream caller audio to the bot the way a phone line does.
+
+        Two properties of a real line matter, and getting either wrong makes the
+        bot look broken when it is not:
+
+        * **Pacing.** A carrier delivers 20 ms of audio every 20 ms. Bursting a
+          three-second utterance into the socket in a few milliseconds means the
+          server-side VAD sees the whole utterance at once and then *nothing* —
+          no silence, no continuation. With ``semantic_vad`` it then waits its
+          full window (up to 8 s on ``eagerness: low``) for audio that never
+          comes.
+        * **Trailing silence.** Silence on a phone line is still audio. When the
+          client simply stops sending, endpointing has nothing to detect.
+
+        Measured against CROSS3 on 2026-08-30: bursting with no trailing silence
+        produced **one** model response — the greeting — in a 66-second call with
+        three caller utterances. With pacing and trailing silence the same call
+        produced four.
+
+        Pass ``paced=False`` for the old burst behaviour (useful when a test
+        deliberately floods the input buffer).
+        """
         if self._ws is None:
             raise RuntimeError("connect() first")
         pcm = audio.to_bytes() if isinstance(audio, AudioBuffer) else bytes(audio)
+        if trailing_silence_ms > 0:
+            pcm += b"\x00" * (SLIN_SAMPLE_RATE * 2 * trailing_silence_ms // 1000)
+        if paced:
+            await self._send_paced(pcm)
+            return
         for i in range(0, len(pcm), SLIN_FRAME_BYTES):
             await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
 
     async def _send_paced(self, pcm: bytes, *, on_first=None) -> None:
         """Stream caller audio as *wall-clock-paced* 20 ms SLIN frames.
 
-        Unlike :meth:`send_audio` (which bursts every frame into the socket as
-        fast as the OS accepts it), this sleeps 20 ms between frames so the
-        interrupt reaches the bot in real time. Barge-in stop latency then
-        measures the app's actual reaction — not how fast a send buffer drains.
+        This sleeps 20 ms between frames so the audio reaches the bot in real
+        time — the same pacing a carrier applies. Barge-in stop latency then
+        measures the app's actual reaction, not how fast a send buffer drains.
+        :meth:`send_audio` delegates here unless a test asks for a burst.
         ``on_first`` fires just before the first frame goes out: the instant the
         caller starts talking over the bot. Cancel the task to stop early (the
         app acknowledged with ``clear``, so there is no need to keep talking).
