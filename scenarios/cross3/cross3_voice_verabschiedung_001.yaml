@@ -29,6 +29,12 @@ user:
 audio:
   profile: clean
   sample_rate: 8000
+  # Der Bot beendet das Gespräch auf ZWEI Wegen, und beide zählen: über das
+  # Werkzeug `gespraech_beenden` (dann fällt die Leitung nach dem Abschiedssatz)
+  # oder — wenn das Modell das Werkzeug vergisst, gemessen in 2 von 5 Läufen —
+  # über die Stille-Notbremse der Brücke nach 45 s. Wer nur 8 s wartet, misst
+  # nicht den Bot, sondern die eigene Ungeduld.
+  end_wait_ms: 55000
 
 expected:
   required_events:

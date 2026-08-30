@@ -56,6 +56,13 @@ class VoiceConfig:
     barge_in_stop_ms: int = 60
     #: Detection budget asserted against (concept §14 default: 300 ms).
     barge_in_sla_ms: int = 300
+    #: Wie lange nach dem letzten Anrufersatz auf einen Abschluss-Rahmen
+    #: (hangup/transfer) gewartet wird. Ein Anrufer, der sich verabschiedet hat,
+    #: legt nicht selbst auf — er wartet, bis die Leitung faellt. Szenarien, die
+    #: eine Notbremse des Bots pruefen (etwa "auf einer stillen Leitung wird
+    #: aufgelegt"), muessen hier deren Frist abdecken, sonst messen sie nur die
+    #: Ungeduld des Laeufers.
+    end_wait_ms: int = 8000
     sample_rate: int = 16000
     #: Extra overrides applied on top of the named profile.
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -83,6 +90,7 @@ class VoiceConfig:
             barge_in_detection_ms=raw.pop("barge_in_detection_ms", 120),
             barge_in_stop_ms=raw.pop("barge_in_stop_ms", 60),
             barge_in_sla_ms=raw.get("barge_in_sla_ms", 300),
+            end_wait_ms=raw.pop("end_wait_ms", 8000),
             sample_rate=raw.pop("sample_rate", 16000),
             overrides=raw,
         )
