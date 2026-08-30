@@ -60,9 +60,15 @@ class Cross3VoiceRunner:
         stt: STTEngine | None = None,
         user_tts: TTSEngine | None = None,
         state_reader: StateReader | None = None,
+        pre_case: Callable[[dict], Awaitable[None]] | None = None,
         quiet_ms: int = 600,
     ) -> None:
         self.client_factory = client_factory
+        # Ausgangszustand pro Case (cross3_reset/cross3_seed/cross3_fault). Bis
+        # 2026-08-30 gab es das nur im Text-Adapter: ein Voice-Szenario mit
+        # ``cross3_reset: true`` setzte NICHTS zurueck, und Buchungen aus
+        # frueheren Cases zaehlten still mit.
+        self.pre_case = pre_case
         self.stt = stt
         # Der Anrufer muss WIRKLICH sprechen. DeterministicTTS erzeugt eine
         # Summe von Sinusschwingungen mit sprachähnlicher Hüllkurve — richtig
@@ -102,6 +108,8 @@ class Cross3VoiceRunner:
         call_start = time.monotonic()
 
         try:
+            if self.pre_case is not None:
+                await self.pre_case(state)
             await client.connect(did=did, caller_id=caller_id)
             events.emit("session_started", mode="voice", profile=cfg.profile)
 
@@ -109,7 +117,7 @@ class Cross3VoiceRunner:
             # that greeting; otherwise just listen to it.
             history: list[dict[str, str]] = []
             last_bot: str | None = None
-            if cfg.barge_in is not None:
+            if cfg.barge_in is not None and cfg.barge_in.at_turn == 0:
                 interrupt_text = cfg.barge_in.utterance or "Nein, warten Sie bitte kurz."
                 interrupt_audio = self._caller_audio(interrupt_text, chaos)
                 greeting = await client.bot_turn_with_barge_in(
@@ -154,7 +162,21 @@ class Cross3VoiceRunner:
                         "user_audio_finished", turn=turn_index, audio_ms=caller_audio.duration_ms
                     )
 
-                    bot_turn = await client.next_bot_turn(quiet_ms=self.quiet_ms)
+                    if cfg.barge_in is not None and cfg.barge_in.at_turn == turn_index:
+                        # Der Anrufer faellt DIESER Antwort ins Wort — nicht der
+                        # Begruessung. Genau dafuer ist ``at_turn`` da.
+                        bot_turn = await client.bot_turn_with_barge_in(
+                            self._caller_audio(
+                                cfg.barge_in.utterance or "Nein, warten Sie bitte kurz.", chaos
+                            ),
+                            interrupt_after_ms=cfg.barge_in.interrupt_after_ms,
+                            quiet_ms=self.quiet_ms,
+                        )
+                        if bot_turn.interrupt_attempted:
+                            self._record_barge_in(events, bot_turn, cfg, turn_index=turn_index)
+                            barge_records.append(self._barge_dict(bot_turn, cfg))
+                    else:
+                        bot_turn = await client.next_bot_turn(quiet_ms=self.quiet_ms)
                     latency = bot_turn.first_audio_latency_ms
                     if latency is None:
                         latency = int((time.monotonic() - t0) * 1000)
@@ -273,6 +295,7 @@ async def run_cross3_voice_suite(
     *,
     stt: STTEngine | None = None,
     state_reader: StateReader | None = None,
+    pre_case: Callable[[dict], Awaitable[None]] | None = None,
     personas: dict | None = None,
     seeds: list[int] | None = None,
     bot_version: str = "cross3-voice",
@@ -288,7 +311,11 @@ async def run_cross3_voice_suite(
 
     pipeline = EvaluationPipeline()
     runner = Cross3VoiceRunner(
-        client_factory, stt=stt, state_reader=state_reader, quiet_ms=quiet_ms
+        client_factory,
+        stt=stt,
+        state_reader=state_reader,
+        pre_case=pre_case,
+        quiet_ms=quiet_ms,
     )
     results = []
     for scenario in scenarios:

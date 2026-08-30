@@ -40,6 +40,13 @@ class BargeInConfig:
     utterance: str | None = None
     #: Only interrupt if the bot is still speaking after this much audio.
     min_bot_audio_ms: int = 300
+    #: WHICH bot turn to interrupt. 0 = the greeting (default, and until
+    #: 2026-08-30 the only possibility). A scenario that wants to interrupt a
+    #: later utterance — "no, Thursday instead", spoken over the slot
+    #: announcement — has to be able to say WHEN: talking over the greeting
+    #: with that line makes it the caller's opening words, which derails the
+    #: whole conversation and tests something nobody meant to test.
+    at_turn: int = 0
 
 
 @dataclass

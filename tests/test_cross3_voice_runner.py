@@ -173,6 +173,33 @@ async def test_barge_in_sla_breach_fails():
     assert "barge_in_sla" in (r.critical_failure or "")
 
 
+async def test_barge_in_at_turn_interrupts_that_turn_not_the_greeting():
+    """``at_turn`` entscheidet, WELCHE Aeusserung unterbrochen wird.
+
+    Bis 2026-08-30 traf die Unterbrechung immer die Begruessung. Ein Szenario
+    wie „Barge-in in der Slot-Ansage" sprach seinen Einwand („Nein, lieber
+    Donnerstag") damit als ERSTEN Satz an den Bot — es pruefte etwas, das
+    niemand gemeint hat, und der Rest des Gespraechs lief ins Leere.
+    """
+    async with _Server() as srv:
+        scn = _scenario(
+            "AT997-bargein",
+            lines=["Ich haette gern einen Termin.", "Ja, passt.", "Danke, auf Wiederhoeren."],
+            audio={
+                "profile": "clean",
+                "barge_in": {"interrupt_after_ms": 30, "at_turn": 2},
+                "barge_in_sla_ms": 300,
+            },
+        )
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    unterbrechungen = [e for e in r.events if e.type == "interrupt_start"]
+    assert unterbrechungen, "keine Unterbrechung ausgeloest"
+    assert all(e.turn == 2 for e in unterbrechungen), [
+        (e.turn, e.payload) for e in unterbrechungen
+    ]
+
+
 async def test_hangup_ends_the_call():
     async with _Server() as srv:
         scn = _scenario("AT997-hangup", lines=["Auf Wiederhören."])
