@@ -198,6 +198,19 @@ class Cross3VoicePhoneClient:
         gap of ``quiet_ms`` with no further audio (Azure's semantic-VAD pacing),
         a ``clear`` (barge-in), or a ``hangup``/``stop``/close. ``max_ms`` bounds
         the wait so a stuck stream cannot hang the test.
+
+        **The gap is measured against PLAYBACK, not arrival.** The app pushes a
+        finished sentence into the socket far faster than 8 kHz real time; a
+        caller on a real line is still listening to it long after the last byte
+        arrived. Ending the turn at "socket idle for 600 ms" therefore hands
+        control back while the bot is, from the caller's side, still mid-
+        sentence — and every scripted line then lands as a barge-in.
+
+        Measured against CROSS3 on 2026-08-30: a four-turn call produced FOUR
+        barge-ins and 24 seconds of discarded bot audio in 31 seconds of call.
+        No booking could ever complete, because the caller talked over every
+        question. Waiting out the playback fixes that without slowing down
+        anything that really is silent.
         """
         import asyncio
 
@@ -208,6 +221,14 @@ class Cross3VoicePhoneClient:
         loop = asyncio.get_event_loop()
         started_at = loop.time()
         deadline = started_at + max_ms / 1000.0
+
+        def rest_der_wiedergabe() -> float:
+            """Sekunden, die der Anrufer noch zuhoert (0, wenn er durch ist)."""
+            if not chunks:
+                return 0.0
+            gespielt = loop.time() - (started_at + (turn.first_audio_latency_ms or 0) / 1000.0)
+            gesendet = sum(len(c) for c in chunks) / (SLIN_SAMPLE_RATE * 2)
+            return max(0.0, gesendet - gespielt)
 
         while True:
             remaining = deadline - loop.time()
@@ -220,8 +241,13 @@ class Cross3VoicePhoneClient:
             except asyncio.TimeoutError:
                 # Quiet gap: end of this bot turn (only if we already got audio;
                 # otherwise keep waiting up to max_ms for the turn to start).
-                if chunks:
+                if not chunks:
+                    continue
+                rest = rest_der_wiedergabe()
+                if rest <= 0:
                     break
+                # Noch nicht: der Anrufer hoert die letzten Sekunden erst.
+                budget_recv_timeout = min(rest, remaining)
                 continue
             except Exception:
                 turn.ended = True
@@ -232,6 +258,7 @@ class Cross3VoicePhoneClient:
                 if not chunks:
                     turn.first_audio_latency_ms = int((loop.time() - started_at) * 1000)
                 chunks.append(bytes(msg))
+                budget_recv_timeout = quiet_ms / 1000.0
                 continue
 
             # Text control frame.
