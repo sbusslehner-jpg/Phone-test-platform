@@ -188,7 +188,23 @@ class Cross3VoicePhoneClient:
                 if on_first is not None:
                     on_first()
                 first = False
-            await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
+            try:
+                await self._ws.send(pcm[i : i + SLIN_FRAME_BYTES])
+            except Exception:
+                # Die Gegenseite hat aufgelegt oder umgelegt, WÄHREND der
+                # Anrufer noch sprach. Am Telefon ist das ein normaler Ausgang
+                # — genau der Fall "ich verbinde Sie" mitten im Satz —, kein
+                # Fehler des Läufers. Aufhören zu senden und zurückkehren: den
+                # transfer-/hangup-Rahmen liest ``next_bot_turn`` aus dem
+                # Empfangspuffer, wo er schon liegt.
+                #
+                # Vor der Taktung fiel das nie auf: Die ganze Äusserung war in
+                # Millisekunden im Socket, bevor die Gegenseite reagieren
+                # konnte. Mit echtem Zeitverhalten dauert sie Sekunden, und das
+                # Rennen ist real — der Weiterleitungs-Test flatterte in 2 von
+                # 6 Läufen mit "ConnectionClosedOK" statt eines transfer.
+                self.ended = True
+                return
             await asyncio.sleep(SLIN_FRAME_MS / 1000.0)
 
     async def next_bot_turn(self, *, quiet_ms: int = 600, max_ms: int = 20000) -> BotTurn:

@@ -235,6 +235,33 @@ async def test_transfer_ends_the_call():
     assert not any(e.type == "run_error" for e in r.events)
 
 
+async def test_transfer_waehrend_der_anrufer_spricht_ist_kein_laeuferfehler():
+    """Umlegen mitten im Satz ist ein normaler Ausgang, kein ``run_error``.
+
+    Seit der Anrufer in Echtzeit spricht, dauert eine Aeusserung Sekunden statt
+    Millisekunden — und die Gegenseite kann mitten hinein auflegen oder
+    umlegen. Genau das ist der Fall "ich verbinde Sie". Vorher riss der Sendeweg
+    dabei mit ``ConnectionClosedOK`` ab und der ganze Lauf wurde zum Fehler; der
+    ``transfer``-Rahmen lag ungelesen im Empfangspuffer (2 von 6 Laeufen).
+    """
+    async with _Server() as srv:
+        # Lange Aeusserung: Das Senden dauert sicher laenger, als der Server
+        # zum Umlegen braucht — das Rennen ist damit kein Zufall mehr.
+        scn = _scenario(
+            "AT997-transfer",
+            lines=[
+                "Guten Tag, ich haette da eine laengere Frage und moechte "
+                "deswegen bitte gleich einen Mitarbeiter sprechen, danke."
+            ],
+        )
+        summary = await run_cross3_voice_suite([scn], srv.factory(), quiet_ms=120)
+    r = summary.results[0]
+    assert any(e.type == "transfer" for e in r.events), [e.type for e in r.events]
+    assert not any(e.type == "run_error" for e in r.events), [
+        e.payload for e in r.events if e.type == "run_error"
+    ]
+
+
 async def test_greeting_hangup_is_not_a_run_error():
     async with _Server() as srv:
         scn = _scenario("AT997-greethangup", lines=["Hallo?"])
