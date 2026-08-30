@@ -59,6 +59,26 @@ def build_bot(version: str, args=None):
     return ReferenceAppointmentBot(version=version, behavior=_BOT_BEHAVIORS.get(version))
 
 
+def _skip_tags(scenarios, args):
+    """Szenarien mit diesen Tags auslassen (``--skip-tag``, mehrfach moeglich).
+
+    Wofuer: ``run`` faehrt den TEXT-Kanal. Ein Szenario, das eine Weiterleitung
+    am Telefon prueft (``{"type":"transfer"}`` ans Relay), kann dort nicht
+    bestehen -- im Text gibt es keinen Hoerer weiterzureichen. Es lief trotzdem
+    mit und stand dauerhaft rot; genau die Sorte Rot, die dazu erzieht, Rot zu
+    uebersehen. ``--skip-tag voice`` laesst es weg, und ``cross3-voice`` faehrt
+    es als Anruf.
+    """
+    raus = set(getattr(args, "skip_tag", None) or [])
+    if not raus:
+        return scenarios
+    behalten = [s for s in scenarios if not (raus & set(s.tags or []))]
+    weg = len(scenarios) - len(behalten)
+    if weg:
+        print(f"  ({weg} Szenario(e) uebersprungen: Tag {', '.join(sorted(raus))})")
+    return behalten
+
+
 def _load_suite(suite: str, scenarios_dir: str):
     if suite == "redteam":
         return redteam_scenarios()
@@ -215,7 +235,7 @@ def _maybe_capture_regressions(summary: RunSummary, args, scenarios) -> None:
 
 
 def cmd_run(args) -> int:
-    scenarios = _load_suite(args.suite, args.scenarios_dir)
+    scenarios = _skip_tags(_load_suite(args.suite, args.scenarios_dir), args)
     if not scenarios:
         print(f"No scenarios found for suite {args.suite!r}", file=sys.stderr)
         return 2
@@ -616,6 +636,12 @@ def _add_run_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--json", default=None, help="write full JSON report here")
     p.add_argument("--now", default=None, help="timestamp to stamp captured regressions")
+    p.add_argument(
+        "--skip-tag",
+        action="append",
+        default=None,
+        help="Szenarien mit diesem Tag auslassen (mehrfach moeglich), z.B. --skip-tag voice",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
