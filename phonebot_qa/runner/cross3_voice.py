@@ -215,7 +215,7 @@ class Cross3VoiceRunner:
             # meldete „hangup never occurred" für einen Bot, der korrekt
             # aufgelegt hätte.
             if not client.ended:
-                schluss = await client.next_bot_turn(quiet_ms=self.quiet_ms, max_ms=8000)
+                schluss = await client.next_bot_turn(quiet_ms=self.quiet_ms, max_ms=cfg.end_wait_ms)
                 if schluss.audio:
                     self._emit_bot_turn(events, schluss, turn=turn_index + 1)
                 if schluss.ended:
