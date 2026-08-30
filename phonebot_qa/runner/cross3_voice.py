@@ -201,6 +201,26 @@ class Cross3VoiceRunner:
                     if user_turn.finished or simulator.finished:
                         break
 
+            # Der Anrufer ist mit seinem Text durch — das Gespräch ist es nicht.
+            #
+            # Wer „Auf Wiederhören" gesagt hat, legt nicht selbst auf: Er wartet,
+            # bis die Leitung fällt. Der Bot braucht dafür einen Moment, denn er
+            # spricht seinen Abschiedssatz noch zu Ende, bevor er den
+            # hangup-Rahmen schickt (CROSS3 rechnet dessen Restspielzeit aus).
+            #
+            # Ohne dieses Warten schloss der Läufer den Socket, sobald der
+            # letzte Ton angekommen war — rund 400 ms zu früh. Gemessen am
+            # 2026-08-30: CROSS3 protokollierte „Auflegen in 3238ms
+            # (Restspielzeit)", der Läufer war da längst weg, und das Szenario
+            # meldete „hangup never occurred" für einen Bot, der korrekt
+            # aufgelegt hätte.
+            if not client.ended:
+                schluss = await client.next_bot_turn(quiet_ms=self.quiet_ms, max_ms=8000)
+                if schluss.audio:
+                    self._emit_bot_turn(events, schluss, turn=turn_index + 1)
+                if schluss.ended:
+                    self._emit_call_end(events, schluss, turn=turn_index + 1)
+
             # Backend truth: read CROSS3's mock state (did the booking land?).
             if self.state_reader is not None:
                 try:
