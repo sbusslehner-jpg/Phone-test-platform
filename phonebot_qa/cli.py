@@ -361,6 +361,149 @@ def cmd_voice(args) -> int:
     return 0 if failures == 0 else 1
 
 
+def cmd_cross3_voice(args) -> int:
+    """Fahre Szenarien als ECHTE Anrufe gegen CROSS3s Telefon-Relay.
+
+    Warum das ein eigener Unterbefehl ist und nicht ``run --modes voice``:
+    ``--bot cross3`` baut den ``Cross3Adapter`` — den TEXT-Kanal. Ein als
+    ``voice`` markiertes Szenario lief deshalb bisher still ueber Text, mit
+    einem Ergebnis, das nach Telefon aussah und keines war. Der Telefonpfad
+    haengt nicht am BotAdapter-Vertrag (Anfrage rein, Antwort raus), sondern an
+    einem voll-duplexen Medienstrom mit Kontrollrahmen; ``Cross3VoiceRunner``
+    ist dafuer da, war aber an nichts angeschlossen ausser an seine Tests.
+
+    Ohne ``--sbo-country/--sbo-dealer`` laeuft der Lauf ohne Backend-Wahrheit:
+    Barge-in, Latenz, Hangup und Transfer scoren dann, eine Buchung nicht.
+    """
+    from .adapters.transport import Cross3VoicePhoneClient
+    from .runner import run_cross3_voice_suite
+
+    scenarios = _load_suite(args.suite, args.scenarios_dir)
+    if args.only_voice_tags:
+        scenarios = [s for s in scenarios if "voice" in (s.tags or [])]
+    if not scenarios:
+        print(f"No voice scenarios found for suite {args.suite!r}", file=sys.stderr)
+        return 2
+
+    ws_url = args.ws_url or os.environ.get("CROSS3_WS_URL")
+    if not ws_url:
+        base = args.base_url or os.environ.get("CROSS3_BASE_URL", "http://127.0.0.1:8080")
+        ws_url = base.replace("https://", "wss://").replace("http://", "ws://")
+    token = args.relay_token or os.environ.get("RELAY_TOKEN", "")
+    if not token:
+        print("Kein Relay-Token (--relay-token oder RELAY_TOKEN)", file=sys.stderr)
+        return 2
+
+    def factory():
+        return Cross3VoicePhoneClient(ws_url, relay_token=token)
+
+    summary = asyncio.run(
+        run_cross3_voice_suite(
+            scenarios,
+            factory,
+            state_reader=_sbo_state_reader(args),
+            pre_case=_cross3_pre_case(args),
+            personas=_load_personas(args.personas_dir),
+            seeds=args.seeds or list(range(args.iterations)),
+            quiet_ms=args.quiet_ms,
+        )
+    )
+    _print_summary(summary)
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps(summary.to_report(), indent=2, ensure_ascii=False), "utf-8"
+        )
+        print(f"\nWrote JSON report to {args.json}")
+    if args.junit:
+        _write_junit(summary, args.junit)
+        print(f"Wrote JUnit report to {args.junit}")
+    return 0 if summary.critical_failures == 0 and summary.errored == 0 else 1
+
+
+def _cross3_pre_case(args):
+    """``cross3_reset``/``cross3_seed``/``cross3_fault`` auch am Telefon.
+
+    Dieselbe Vorbereitung wie im Text-Kanal, ueber dieselbe Methode
+    (``Cross3Adapter.prepare_case``) — sonst driften die beiden Pfade
+    auseinander und ein Szenario bedeutet je nach Kanal etwas anderes.
+    """
+    token = args.admin_token or os.environ.get("ADMIN_TOKEN", "")
+    if not token:
+        return None
+    from .adapters.bot import Cross3Adapter
+
+    adapter = Cross3Adapter(
+        base_url=args.base_url or os.environ.get("CROSS3_BASE_URL", "http://127.0.0.1:8080"),
+        tenant_id=args.tenant or os.environ.get("CROSS3_TENANT", "senker"),
+        version="cross3-voice",
+        admin_token=token,
+    )
+
+    async def vorbereiten(state):
+        await adapter.prepare_case(state, str(state.get("tenant_id") or adapter.default_tenant))
+
+    return vorbereiten
+
+
+def _sbo_state_reader(args):
+    """Backend-Wahrheit nach dem Anruf: was liegt wirklich im Bestand?
+
+    Der Relay leitet keine Werkzeug-Aufrufe durch — sie laufen in der Bruecke.
+    Ob eine per Sprache ausgeloeste Buchung gelandet ist, sieht man deshalb nur
+    hinterher. Gelesen wird ueber ``GET /api/admin/test-state``; die Mock-Routen
+    selbst sind von aussen dicht (prozesslokales Token seit dem Sicherheits-
+    Audit), und die Admin-Route gibt bewusst Wochentag und Uhrzeit statt Name
+    und Adresse zurueck.
+
+    ``None``, wenn kein Admin-Token vorliegt: lieber ein Lauf, der ehrlich keine
+    Backend-Assertions hat, als einer, der gegen ein leeres Ergebnis prueft und
+    gruen meldet.
+
+    Neben den Terminen selbst (Schluessel ``termine.<appointmentId>``) legt der
+    Leser einen Sammelsatz unter ``sbo_stand.stand`` ab. Nur der ist beim
+    Schreiben eines Szenarios adressierbar: Die Termin-ID einer Buchung, die
+    erst im Anruf entsteht, kennt niemand vorher.
+    """
+    token = args.admin_token or os.environ.get("ADMIN_TOKEN", "")
+    if not token:
+        return None
+    base = (args.base_url or os.environ.get("CROSS3_BASE_URL", "http://127.0.0.1:8080")).rstrip("/")
+    tenant = args.tenant or os.environ.get("CROSS3_TENANT", "senker")
+    url = f"{base}/api/admin/test-state?tenantId={tenant}"
+
+    async def read(_client):
+        import urllib.request
+
+        def hole():
+            # CROSS3 weist Anfragen ohne Origin grundsaetzlich ab (403) — ein
+            # Testlauf ist ein legitimer Erstanbieter-Aufruf.
+            req = urllib.request.Request(
+                url, headers={"Authorization": f"Bearer {token}", "Origin": base}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+
+        try:
+            stand = await asyncio.get_running_loop().run_in_executor(None, hole)
+        except Exception as exc:  # noqa: BLE001 - Diagnose statt stillem Leerbefund
+            print(f"  (Buchungs-Stand nicht lesbar: {exc})", file=sys.stderr)
+            return {}
+        termine = stand.get("termine", [])
+        return {
+            "termine": termine,
+            "sbo_stand": [
+                {
+                    "id": "stand",
+                    "gebucht": stand.get("gebucht", 0),
+                    "storniert": stand.get("storniert", 0),
+                    "wochentage": sorted({t.get("wochentag", "") for t in termine if t.get("wochentag")}),
+                }
+            ],
+        }
+
+    return read
+
+
 def cmd_discover(args) -> int:
     """Explore beyond the written scenarios and report violations (§23)."""
     from .discovery import DiscoveryEngine
@@ -528,6 +671,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_voice.add_argument("--capture-regressions", default=None)
     _add_run_opts(p_voice)
     p_voice.set_defaults(func=cmd_voice)
+
+    p_c3v = sub.add_parser(
+        "cross3-voice", help="Szenarien als echte Anrufe gegen CROSS3s Telefon-Relay fahren"
+    )
+    p_c3v.add_argument("--suite", default="cross3", help="Szenario-Unterordner")
+    p_c3v.add_argument("--ws-url", default=None, help="WSS-Basis des Relays (Vorgabe: aus --base-url abgeleitet)")
+    p_c3v.add_argument("--relay-token", default=None, help="x-relay-token (Vorgabe: $RELAY_TOKEN)")
+    p_c3v.add_argument(
+        "--admin-token",
+        default=None,
+        help="Admin-Token fuer den Buchungs-Stand nach dem Anruf (Vorgabe: $ADMIN_TOKEN); ohne ihn laeuft der Lauf ohne Backend-Assertions",
+    )
+    p_c3v.add_argument(
+        "--all-scenarios",
+        dest="only_voice_tags",
+        action="store_false",
+        default=True,
+        help="auch Szenarien ohne voice-Tag anrufen (Vorgabe: nur voice)",
+    )
+    p_c3v.add_argument(
+        "--quiet-ms",
+        type=int,
+        default=2000,
+        help=(
+            "Stille, nach der der Anrufer den Zug uebernimmt (Vorgabe 2000). "
+            "Nicht kleiner setzen als die Werkzeug-Laufzeit: Der Bot sagt "
+            "'ich schau, was frei ist' und schweigt dann, waehrend das DMS "
+            "antwortet. Ein Mensch wartet das ab; ein zu ungeduldiger "
+            "Testanrufer redet hinein und das Gespraech entgleist."
+        ),
+    )
+    p_c3v.add_argument("--junit", default=None)
+    _add_run_opts(p_c3v)
+    p_c3v.set_defaults(func=cmd_cross3_voice)
 
     p_disc = sub.add_parser("discover", help="automatic test discovery (§23)")
     p_disc.add_argument("--suite", default="all", help="seed scenarios to mutate ('' for rules only)")
