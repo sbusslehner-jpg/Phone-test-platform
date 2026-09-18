@@ -275,22 +275,25 @@ def test_verification_burning_scenarios_use_their_own_caller_number():
         assert not others, f"{sid} teilt {phone} mit {others}"
 
 
-def test_known_open_scenarios_are_exactly_the_documented_two():
+def test_known_open_scenarios_are_exactly_the_documented_one():
     """Bewusst rote Cases sind auffindbar — und ihre Zahl wächst nicht unbemerkt.
 
     Jeder trägt im Datei-Kopf, WAS beim Prüfling bzw. an der Plattform fehlt:
 
     * cross3_no_slot_free_001     — „nichts frei" kommt über den Fehler-Kanal
-    * cross3_scan_token_security_001 — der HTTP-Scan-Driver (M2) fehlt
 
-    cross3_slot_race_001 ist seit 2026-08-10 wieder scharf
-    (armServiceBookingFault beim Prüfling).
+    cross3_scan_token_security_001 trägt den Tag seit 2026-09-18 NICHT mehr:
+    Er ist dauerhaft offen (der HTTP-Scan-Driver aus M2 fehlt) und wird über
+    seinen eigenen Tag `needs_m2_driver` übersprungen. Mit `known_open` hätte
+    ein Nachtlauf, der ihn auslässt, auch no_slot_free verloren — einen Fall,
+    der besteht.
+
+    cross3_slot_race_001 ist wieder scharf (Fault auf /appointment/book).
     """
     known_open = {s.id for s in _load().values() if "known_open" in s.tags}
-    assert known_open == {
-        "cross3_no_slot_free_001",
-        "cross3_scan_token_security_001",
-    }
+    assert known_open == {"cross3_no_slot_free_001"}
+    scan = _load()["cross3_scan_token_security_001"]
+    assert "needs_m2_driver" in scan.tags and "known_open" not in scan.tags
 
 
 def test_m2_dependent_scenarios_are_marked():
