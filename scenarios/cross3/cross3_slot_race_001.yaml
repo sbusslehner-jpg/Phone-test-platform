@@ -1,19 +1,19 @@
 # CROSS3 DMS — Slot zwischen Ansage und Buchung weggeschnappt (Race)
 # (Fall-Matrix P1, cross3-slot-race-001).
 #
-# SCHARF seit 2026-08-10: Der Prüfling kennt jetzt `armServiceBookingFault`
-# (server/mocks/service-booking.mjs, via /api/admin/test-fault mit
-# api: "service-booking" + mode). Ein mode "409" antwortet auf dem
-# Buchungs-SCHREIBPFAD (`createServiceBooking`) mit
-# „summary.slot.not.available" — exakt die Race: der Termin wurde zwischen
-# Ansage und Buchung vergeben. Der Executor übersetzt das in den Fehler
-# `slot_vergeben`; der Bot muss sich entschuldigen, NEU suchen und darf
+# ZIEL SEIT 2026-09-18: der SBO-Buchungspfad `/appointment/book` mit mode
+# "409" ⇒ „summary.slot.not.available" — exakt die Race: der Termin wurde
+# zwischen Ansage und Buchung vergeben. Der Executor übersetzt das in den
+# Fehler `slot_vergeben`; der Bot muss sich entschuldigen, NEU suchen und darf
 # keinen Erfolg behaupten. `once: true`: der zweite Buchungsversuch gelingt.
 #
-# Historie: Nach dem API-Umbau (Buchung über Premium Service Booking statt
-# SBO `/appointment/book`) war die Race nicht mehr injizierbar — der Case
-# failte BEWUSST mit `fault_must_fire: true` ohne Direktive, statt vakuum-
-# grün eine gewöhnliche Buchung durchzuwinken.
+# Historie: Von 2026-08-10 bis 2026-09-18 zielte die Direktive auf
+# `api: "service-booking"` (Premium Service Booking V1). Deren Haken hat der
+# Prüfling am 2026-08-13 mit der API selbst entfernt (gebucht wird wieder über
+# SBO); ohne `path` schaltete der Admin-Hook den Fault seither auf JEDEN
+# SBO-Aufruf scharf — eingelöst hat ihn der erste (sbo_get_services), die
+# Buchung gelang danach normal, und der Fall failte acht Nächte lang mit
+# „no faulted tool call observed".
 id: cross3_slot_race_001
 description: Buchung läuft in einen 409 (Slot vergeben) — Bot entschuldigt sich, sucht neu, bucht den nächsten.
 tags: [cross3, booking, fault_injection, dms, m3]
@@ -23,7 +23,7 @@ initial_state:
   caller_phone: "+436601234567"      # Max Mustermann (verifiziert)
   cross3_reset: true                 # sauberer Slot-/Buchungsstand pro Case
   cross3_fault:
-    api: "service-booking"
+    path: "/appointment/book"        # nur der Buchungs-Schreibpfad, nicht der Katalog
     mode: "409"                      # 'summary.slot.not.available' beim 1. Buchen
     once: true                       # der zweite Versuch gelingt
 

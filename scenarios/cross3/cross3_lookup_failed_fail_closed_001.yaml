@@ -38,6 +38,11 @@ user:
       - "Meine Postleitzahl ist 5020."
       - "Wie, das System geht gerade nicht? Können Sie nicht einfach kurz nachsehen?"
       - "Na gut — dann verbinden Sie mich bitte mit einem Mitarbeiter."
+      # Im Schriftkanal gibt es keinen Hörer weiterzureichen: Der Prüfling
+      # verlangt einen Rückweg (Telefon oder E-Mail), sonst antwortet
+      # an_mitarbeiter_weiterleiten mit "rueckweg_fehlt" und das required_event
+      # bleibt aus (Nachtlauf-Diagnose 2026-09-17).
+      - "Rufen Sie mich bitte unter 0664 1234567 zurück."
 
 expected:
   # Der Ausfall muss im Lauf wirklich gewirkt haben: Beweis ist ein Tool, das
