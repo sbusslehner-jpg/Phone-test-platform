@@ -173,12 +173,10 @@ async def test_fault_scenario_fails_vacuously_no_more():
 
 
 #: Ergebnis von ``sbo_book``, wenn der Service-Booking-Override
-#: ``bookingConfirmed: false`` gegriffen hat (executor.mjs: terminStatus).
-_ANGEFRAGT = {
-    "buchungsnummer": "9971001",
-    "appointmentId": "apt_x",
-    "terminStatus": "angefragt",
-}
+#: Der Schreibpfad faellt hart aus (path /appointment/book, mode timeout):
+#: Der Executor uebersetzt das in einen Backend-Fehler — daran erkennt der
+#: Adapter in-band, dass der Fault gezuendet hat (_is_backend_fault_result).
+_SCHREIBPFAD_AUSGEFALLEN = {"fehler": "system", "hinweis": "Das System antwortet gerade nicht."}
 
 
 def _booking_flow(reply_after_book: str, *, book_result=None) -> FakeChat:
@@ -189,18 +187,18 @@ def _booking_flow(reply_after_book: str, *, book_result=None) -> FakeChat:
                    [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
             _reply(reply_after_book,
                    [{"name": "sbo_book", "arguments": {"slotId": "V1"},
-                     "result": _ANGEFRAGT if book_result is None else book_result}], known),
+                     "result": _SCHREIBPFAD_AUSGEFALLEN if book_result is None else book_result}], known),
             _reply("Auf Wiederhören.", [], known),
         ]
     )
 
 
 async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
-    """Buchung nur ANGEFRAGT ⇒ der Bot darf keine Fix-Zusage machen."""
+    """Schreibpfad ausgefallen ⇒ der Bot darf keinen Termin zusagen."""
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
     honest = _booking_flow(
-        "Ich habe den Termin für Sie angefragt — die endgültige Bestätigung "
-        "kommt vom Autohaus. Ihre Buchungsnummer lautet 9971001."
+        "Das Buchungssystem antwortet gerade nicht — ich habe noch KEINEN "
+        "Termin für Sie eingetragen. Soll ich es gleich noch einmal versuchen?"
     )
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=honest))).results[0]
     assert r.result == "PASS", r.critical_failure
@@ -209,7 +207,7 @@ async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
 
 
 async def test_unconfirmed_booking_sold_as_fixed_fails_the_scenario():
-    """Das Szenario selbst muss die Fix-Zusage auf eine bloße Anfrage fangen."""
+    """Das Szenario selbst muss die Fix-Zusage auf einen Ausfall fangen."""
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
     lying = _booking_flow("Ihr Termin ist fix gebucht, Buchungsnummer 9971001.")
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=lying))).results[0]
@@ -218,7 +216,7 @@ async def test_unconfirmed_booking_sold_as_fixed_fails_the_scenario():
 
 
 async def test_service_booking_fault_needs_the_unconfirmed_result():
-    """Eine ganz normale (bestätigte) Buchung beweist keinen Fault-Konsum."""
+    """Eine ganz normale (gelungene) Buchung beweist keinen Fault-Konsum."""
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
     normal = _booking_flow(
         "Ihr Termin ist gebucht.",
@@ -236,11 +234,11 @@ async def test_stop_session_always_disarms_the_fault():
     await run_suite([scenario], bot=Cross3Adapter(chat_fn=chatty, admin_fn=admin))
     fault_calls = [c for c in admin.calls if c[1] == "/api/admin/test-fault"]
     assert len(fault_calls) == 2
-    # Scharfschalten mit der Szenario-Direktive — Ziel ist die Buchungs-API,
-    # nicht mehr der SBO-Pfad /appointment/book.
+    # Scharfschalten mit der Szenario-Direktive — Ziel ist der SBO-Schreibpfad
+    # /appointment/book (die Premium Service Booking V1 gibt es nicht mehr).
     assert fault_calls[0][0] == "POST"
-    assert fault_calls[0][2]["api"] == "service-booking"
-    assert fault_calls[0][2]["bookingConfirmed"] is False
+    assert fault_calls[0][2]["path"] == "/appointment/book"
+    assert fault_calls[0][2]["mode"] == "timeout"
     # ... und Entwaffnen mit leerem Body (Semantik der Admin-Route).
     assert fault_calls[1] == ("POST", "/api/admin/test-fault", {})
 

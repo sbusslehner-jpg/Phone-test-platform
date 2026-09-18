@@ -122,41 +122,43 @@ def test_fault_scenarios_can_no_longer_pass_vacuously():
 
 
 def test_slot_race_is_armed_with_a_write_path_http_fault():
-    """Seit 2026-08-10 kennt der Prüfling `armServiceBookingFault` — die Race
-    ist wieder injizierbar: mode 409 auf dem Buchungs-SCHREIBPFAD, once, mit
-    in-band Beweispflicht (fault_must_fire)."""
+    """Die Race ist injizierbar: mode 409 auf dem Buchungs-SCHREIBPFAD
+    `/appointment/book`, once, mit in-band Beweispflicht (fault_must_fire).
+
+    Seit 2026-08-13 bucht der Prüfling wieder über SBO — die Premium Service
+    Booking V1 und ihr Haken sind entfallen. Der `path` ist Pflicht: Ohne ihn
+    schaltet der Admin-Hook den Fault auf JEDEN SBO-Aufruf scharf, der erste
+    (sbo_get_services) löst ihn ein, und die Buchung gelingt unbehelligt."""
     s = _load()["cross3_slot_race_001"]
     assert "known_open" not in s.tags
     fault = s.initial_state.get("cross3_fault")
-    assert fault == {"api": "service-booking", "mode": "409", "once": True}
+    assert fault == {"path": "/appointment/book", "mode": "409", "once": True}
     assert s.expected.fault_must_fire is True
 
 
 def test_fault_directives_target_an_api_the_hook_knows():
-    """Ziele laut server/routes/admin.mjs — und der Buchungspfad ist NICHT SBO."""
+    """Ziele laut server/routes/admin.mjs (Stand 2026-09-18).
+
+    Der Hook kennt zwei Ziele: `customer` (CRM-Lookup) und — als Default —
+    `sbo`, wo ein `path` den Aufruf bestimmt. Die Premium Service Booking V1
+    und ihr eigener Haken (`api: "service-booking"`, `bookingConfirmed`) sind
+    am 2026-08-13 mit der API entfallen; gebucht wird wieder über SBO
+    `/appointment/book`. Eine Direktive auf ein Ziel, das es nicht mehr gibt,
+    zündet nie und macht den Fall wertlos.
+    """
     valid_modes = {"timeout", "500", "401", "409"}
     for s in _load().values():
         fault = s.initial_state.get("cross3_fault")
         if not fault:
             continue
         api = fault.get("api", "sbo")
-        assert api in {"sbo", "service-booking", "customer"}, s.id
+        assert api in {"sbo", "customer"}, s.id
+        assert fault["mode"] in valid_modes, s.id
+        assert "bookingConfirmed" not in fault, s.id
         if api == "sbo":
-            assert fault["mode"] in valid_modes, s.id
-            # Der Buchungs-Schreibpfad läuft über die Service-Booking-API —
-            # ein SBO-Fault dorthin zündet nie und macht den Case wertlos.
+            # OHNE path trifft der Fault den naechsten SBO-Aufruf, egal
+            # welchen — der Katalog frisst ihn, bevor die Buchung dran ist.
             assert fault["path"].startswith("/appointment/"), s.id
-            assert "/appointment/book" not in fault["path"], s.id
-        elif api == "customer":
-            assert fault["mode"] in valid_modes, s.id
-        else:
-            # service-booking kennt ZWEI Hooks (server/routes/admin.mjs): mit
-            # `mode` fällt der Schreibaufruf selbst aus (armServiceBookingFault,
-            # 409/500/timeout), ohne `mode` greift der Ergebnis-Override.
-            if fault.get("mode") is not None:
-                assert fault["mode"] in {"409", "500", "timeout"}, s.id
-            else:
-                assert fault.get("bookingConfirmed") is False, s.id
 
 
 def test_pii_canary_scenarios_seed_foreign_customers():
