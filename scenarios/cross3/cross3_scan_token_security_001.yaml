@@ -19,7 +19,10 @@
 # Case schlägt laut fehl statt vakuum-grün durchzulaufen (M3-Grundsatz).
 id: cross3_scan_token_security_001
 description: Scan-Token-Sicherheit (404/Replay/Tenant-Pinning/Rate-Limit) — HTTP-Contract via M2-Scan-Driver.
-tags: [cross3, onboarding, scan, security, dms, m3, needs_m2_driver, known_open]
+# Der Tag "known_open" ist bewusst WEG: Er traegt auch cross3_no_slot_free_001,
+# einen Fall, der BESTEHT — ein Nachtlauf, der ihn mituberspringt, verloere
+# echte Deckung. Uebersprungen wird dieser Fall ueber "needs_m2_driver".
+tags: [cross3, onboarding, scan, security, dms, m3, needs_m2_driver]
 
 initial_state:
   tenant_id: "senker"

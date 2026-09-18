@@ -105,6 +105,11 @@ AdminFn = Callable[[str, str, dict[str, Any] | None], Awaitable[Any]]
 #: treffen — dafür gibt es das Ziel ``api: "service-booking"``. Der Storno
 #: läuft weiter über SBO ``/appointment/cancel``.
 _FAULT_PATH_TOOLS: tuple[tuple[str, frozenset[str]], ...] = (
+    # Der Schreibpfad steht VOR dem allgemeinen "/appointment" — sonst
+    # verschluckt dessen Praefix den Buchungspfad, und ein Fault auf
+    # /appointment/book gilt faelschlich nur fuer Storno und Auskunft
+    # (gefunden 2026-09-18, Nachtlauf-Diagnose).
+    ("/appointment/book", frozenset({"sbo_book", "sbo_termin_verschieben"})),
     ("/appointment/cancel", frozenset({"sbo_cancel"})),
     ("/appointment/detail", frozenset({"sbo_get_my_appointments", "sbo_cancel"})),
     (
