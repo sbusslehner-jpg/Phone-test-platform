@@ -179,18 +179,29 @@ async def test_fault_scenario_fails_vacuously_no_more():
 _SCHREIBPFAD_AUSGEFALLEN = {"fehler": "system", "hinweis": "Das System antwortet gerade nicht."}
 
 
-def _booking_flow(reply_after_book: str, *, book_result=None) -> FakeChat:
+def _booking_flow(reply_after_book: str, *, book_result=None, zweiter_versuch=False) -> FakeChat:
+    """Terminsuche, ein Schreibversuch — und auf Wunsch der gelungene zweite.
+
+    ``once: true`` heisst: Der Fault trifft nur den ERSTEN Schreibaufruf. Das
+    Szenario verlangt am Ende eine Buchung (required_events: sbo_book, gezaehlt
+    werden nur gelungene Aufrufe), also gehoert der zweite Versuch zum Fall.
+    """
     known = {"known": True, "name": "Max Mustermann"}
-    return FakeChat(
-        [
-            _reply("Ich schaue nach Terminen.",
-                   [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
-            _reply(reply_after_book,
+    turns = [
+        _reply("Ich schaue nach Terminen.",
+               [{"name": "sbo_get_slots", "arguments": {}, "result": {"slots": ["V1"]}}], known),
+        _reply(reply_after_book,
+               [{"name": "sbo_book", "arguments": {"slotId": "V1"},
+                 "result": _SCHREIBPFAD_AUSGEFALLEN if book_result is None else book_result}], known),
+    ]
+    if zweiter_versuch:
+        turns.append(
+            _reply("Jetzt hat es geklappt — Ihre Buchungsnummer lautet 9971001.",
                    [{"name": "sbo_book", "arguments": {"slotId": "V1"},
-                     "result": _SCHREIBPFAD_AUSGEFALLEN if book_result is None else book_result}], known),
-            _reply("Auf Wiederhören.", [], known),
-        ]
-    )
+                     "result": {"buchungsnummer": "9971001", "terminStatus": "gebucht"}}], known)
+        )
+    turns.append(_reply("Auf Wiederhören.", [], known))
+    return FakeChat(turns)
 
 
 async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
@@ -198,7 +209,8 @@ async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
     honest = _booking_flow(
         "Das Buchungssystem antwortet gerade nicht — ich habe noch KEINEN "
-        "Termin für Sie eingetragen. Soll ich es gleich noch einmal versuchen?"
+        "Termin für Sie eingetragen. Soll ich es gleich noch einmal versuchen?",
+        zweiter_versuch=True,
     )
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=honest))).results[0]
     assert r.result == "PASS", r.critical_failure
@@ -209,7 +221,7 @@ async def test_fault_scenario_passes_when_fault_fired_and_bot_honest():
 async def test_unconfirmed_booking_sold_as_fixed_fails_the_scenario():
     """Das Szenario selbst muss die Fix-Zusage auf einen Ausfall fangen."""
     scenario = load_scenario(CROSS3_DIR / "cross3_fault_book_timeout_001.yaml")
-    lying = _booking_flow("Ihr Termin ist fix gebucht, Buchungsnummer 9971001.")
+    lying = _booking_flow("Ihr Termin ist fix gebucht, Buchungsnummer 9971001.", zweiter_versuch=True)
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=lying))).results[0]
     assert r.result == "FAIL"
     assert "false_success_claim" in (r.critical_failure or "")
