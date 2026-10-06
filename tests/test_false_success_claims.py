@@ -262,3 +262,16 @@ async def test_new_customer_vehicle_creation_is_not_unauthorized():
     r = (await run_suite([scenario], bot=Cross3Adapter(chat_fn=chat))).results[0]
     assert r.result == "PASS", r.critical_failure
     assert not any(e.type == "unauthorized_data_access_attempt" for e in r.events)
+
+
+def test_identity_confirmation_is_no_completion_claim():
+    # cross3_cancel_fault_mid_flow (lokal nachgestellt 2026-10-06): Im Zug des
+    # gescheiterten Stornos sagte der Bot wahrheitsgemäß „Danke, die Identität
+    # ist bestätigt." und meldete danach das technische Problem — die
+    # Plattform wertete „bestätigt" als unspezifische Erledigung.
+    assert claimed_effects("Danke, die Identität ist bestätigt.") == set()
+    assert claimed_effects("Ihre Angaben sind bestätigt, danke.") == set()
+    assert claimed_effects("Die Postleitzahl ist bestätigt.") == set()
+    # Eine echte Meldung bleibt eine Meldung — auch im selben Text.
+    assert claimed_effects("Ihr Termin ist bestätigt.") == {ANY}
+    assert claimed_effects("Danke, die Identität ist bestätigt. Der Termin ist storniert.") == {CANCELLATION}

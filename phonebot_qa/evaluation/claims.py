@@ -74,6 +74,18 @@ _FUTURE = re.compile(
     r"wird|werden|werde|würde|wuerde|würden|wuerden)\b"
 )
 
+#: Eine Bestätigung der IDENTITÄT oder einer Angabe ist keine Vollzugsmeldung
+#: über einen Schreibvorgang. „Danke, die Identität ist bestätigt." steht
+#: regelmäßig im selben Zug wie ein gescheitertes Storno — und wurde als
+#: unspezifische Erledigung (ANY) gegen den Fehlschlag gewertet
+#: (cross3_cancel_fault_mid_flow, lokal nachgestellt am 2026-10-06).
+#: Gilt nur für ANY und nur im Teilsatz vor dem Stichwort: „Ihr Termin ist
+#: bestätigt" bleibt eine Meldung.
+_IDENTITY_SUBJECT = re.compile(
+    r"\b(identität|identitaet|angabe|angaben|daten|postleitzahl|plz|kennzeichen|"
+    r"fahrgestellnummer|nachweis|sicherheitsprüfung|sicherheitspruefung)\b"
+)
+
 #: Leitet die Aussage einen Bedingungs-/Zeitsatz ein, gilt sie als Ganzes
 #: nicht als Vollzugsmeldung („Sobald Sie bestätigen, ist der Termin gebucht").
 _LEADING_CONDITION = re.compile(
@@ -111,6 +123,8 @@ def claimed_effects(reply: str) -> set[str]:
                 # Verneinung und Zukunft binden im TEILSATZ vor dem Stichwort.
                 clause = _CLAUSE_SPLIT.split(statement[:pos])[-1]
                 if _NEGATION.search(clause) or _FUTURE.search(clause):
+                    continue
+                if effect == ANY and _IDENTITY_SUBJECT.search(clause):
                     continue
                 found.add(effect)
                 break
