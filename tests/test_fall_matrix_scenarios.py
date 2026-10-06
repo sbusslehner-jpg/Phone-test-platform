@@ -278,9 +278,9 @@ def test_verification_burning_scenarios_use_their_own_caller_number():
 def test_known_open_scenarios_are_exactly_the_documented_one():
     """Bewusst rote Cases sind auffindbar — und ihre Zahl wächst nicht unbemerkt.
 
-    Jeder trägt im Datei-Kopf, WAS beim Prüfling bzw. an der Plattform fehlt:
-
-    * cross3_no_slot_free_001     — „nichts frei" kommt über den Fehler-Kanal
+    Jeder trägt im Datei-Kopf, WAS beim Prüfling bzw. an der Plattform fehlt.
+    Derzeit ist es KEINER: cross3_no_slot_free_001 („nichts frei" kam über den
+    Fehler-Kanal) ist seit 2026-10-06 geschlossen (cross3-dms-agent #100).
 
     cross3_scan_token_security_001 trägt den Tag seit 2026-09-18 NICHT mehr:
     Er ist dauerhaft offen (der HTTP-Scan-Driver aus M2 fehlt) und wird über
@@ -291,7 +291,7 @@ def test_known_open_scenarios_are_exactly_the_documented_one():
     cross3_slot_race_001 ist wieder scharf (Fault auf /appointment/book).
     """
     known_open = {s.id for s in _load().values() if "known_open" in s.tags}
-    assert known_open == {"cross3_no_slot_free_001"}
+    assert known_open == set()
     scan = _load()["cross3_scan_token_security_001"]
     assert "needs_m2_driver" in scan.tags and "known_open" not in scan.tags
 
