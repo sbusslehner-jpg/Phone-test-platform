@@ -70,3 +70,23 @@ def test_skip_tag_laesst_voice_szenarien_weg():
     assert [s.id for s in behalten] == ["b", "c"]
     # Ohne Angabe bleibt alles, wie es war.
     assert _skip_tags(alle, Namespace(skip_tag=None)) is alle
+
+
+def test_run_writes_transcripts_of_failing_cases_only(tmp_path):
+    # Nachtlauf 2026-10-07: cross3_book_pickerl_001 rot, lokal nicht
+    # nachstellbar, das Gespräch nirgends gespeichert. --transcripts legt es ab.
+    ziel = tmp_path / "transkripte"
+    code = main(["run", "--suite", "booking", "--scenarios-dir", _SD, "--bot-version", "buggy-corrections", "--transcripts", str(ziel)])
+    assert code != 0
+    dateien = sorted(ziel.glob("*.json"))
+    assert dateien, "kein Transkript für einen roten Fall"
+    daten = json.loads(dateien[0].read_text("utf-8"))
+    assert daten["result"] in ("FAIL", "ERROR")
+    assert daten["turns"] and {"user", "bot"} <= set(daten["turns"][0])
+    assert isinstance(daten["tool_calls"], list) and isinstance(daten["events"], list)
+
+
+def test_run_without_failures_writes_no_transcripts(tmp_path):
+    ziel = tmp_path / "transkripte"
+    assert main(["run", "--suite", "booking", "--scenarios-dir", _SD, "--transcripts", str(ziel)]) == 0
+    assert not list(ziel.glob("*.json"))
