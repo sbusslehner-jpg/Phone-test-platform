@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -229,6 +230,43 @@ def _maybe_capture_regressions(summary: RunSummary, args, scenarios) -> None:
         print(f"\nCaptured {n} regression case(s) into {args.capture_regressions}")
 
 
+def _write_transcripts(summary: RunSummary, args) -> None:
+    """Gespräch, Werkzeugaufrufe und Ereignisse jedes roten Falls ablegen.
+
+    Der JSON-Report trägt je Fall nur Ergebnis und Fehlercode. Ein Ausreißer im
+    Nachtlauf (cross3_book_pickerl_001 am 2026-10-07: „sbo_book never
+    occurred", lokal 11/11 grün) ließ sich damit im Nachhinein nicht aufklären —
+    das Gespräch existierte nur im Speicher des Läufers.
+    """
+    ziel = getattr(args, "transcripts", None)
+    if not ziel:
+        return
+    verz = Path(ziel)
+    verz.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for r in summary.results:
+        if r.result == "PASS":
+            continue
+        daten = {
+            "case_id": r.case_id,
+            "scenario_id": r.scenario_id,
+            "result": r.result,
+            "critical_failure": r.critical_failure,
+            "error": r.error,
+            "turns": [{"index": t.index, "user": t.user, "bot": t.bot} for t in r.conversation.turns],
+            "tool_calls": [
+                {"turn": c.turn, "tool": c.tool, "arguments": c.arguments, "status": c.status, "result": c.result}
+                for c in r.tool_calls
+            ],
+            "events": [{"turn": e.turn, "type": e.type, "payload": e.payload} for e in r.events],
+        }
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", r.case_id)[:180]
+        (verz / f"{name}.json").write_text(json.dumps(daten, indent=2, ensure_ascii=False, default=str), "utf-8")
+        n += 1
+    if n:
+        print(f"Wrote {n} transcript(s) of failing case(s) to {ziel}")
+
+
 # --------------------------------------------------------------------------- #
 # Commands                                                                     #
 # --------------------------------------------------------------------------- #
@@ -250,6 +288,7 @@ def cmd_run(args) -> int:
     if args.junit:
         _write_junit(summary, args.junit)
         print(f"Wrote JUnit report to {args.junit}")
+    _write_transcripts(summary, args)
     _maybe_capture_regressions(summary, args, scenarios)
     return 0 if summary.critical_failures == 0 and summary.errored == 0 else 1
 
@@ -437,6 +476,7 @@ def cmd_cross3_voice(args) -> int:
     if args.junit:
         _write_junit(summary, args.junit)
         print(f"Wrote JUnit report to {args.junit}")
+    _write_transcripts(summary, args)
     return 0 if summary.critical_failures == 0 and summary.errored == 0 else 1
 
 
@@ -636,6 +676,11 @@ def _add_run_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--json", default=None, help="write full JSON report here")
     p.add_argument("--now", default=None, help="timestamp to stamp captured regressions")
+    p.add_argument(
+        "--transcripts",
+        default=None,
+        help="Gespräch, Werkzeugaufrufe und Ereignisse jedes roten Falls als JSON in dieses Verzeichnis",
+    )
     p.add_argument(
         "--skip-tag",
         action="append",
